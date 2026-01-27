@@ -295,19 +295,22 @@ def main():
 
     dlc_info = dict(sorted(dlc_info.items()))
 
-    dlc_txt_path = steam_settings / "DLC.txt"
-    with dlc_txt_path.open("w", encoding="utf-8") as f:
-        for dlc_id, title in dlc_info.items():
-            f.write(f"{dlc_id}={title}\n")
+    if dlc_info:
+        dlc_txt_path = steam_settings / "DLC.txt"
+        with dlc_txt_path.open("w", encoding="utf-8") as f:
+            for dlc_id, title in dlc_info.items():
+                f.write(f"{dlc_id}={title}\n")
 
-    ini_path = steam_settings / "configs.app.ini"
-    with ini_path.open("w", encoding="utf-8") as f:
-        f.write("[app::dlcs]\n")
-        f.write("unlock_all=1\n")
-        for dlc_id, title in dlc_info.items():
-            f.write(f"{dlc_id}={title}\n")
+        ini_path = steam_settings / "configs.app.ini"
+        with ini_path.open("w", encoding="utf-8") as f:
+            f.write("[app::dlcs]\n")
+            f.write("unlock_all=1\n")
+            for dlc_id, title in dlc_info.items():
+                f.write(f"{dlc_id}={title}\n")
 
-    print(f"DLC.txt and configs.app.ini written in {steam_settings}")
+        print(f"DLC.txt and configs.app.ini written in {steam_settings}")
+    else:
+        print("No DLC entries found – skipping DLC.txt and configs.app.ini creation.")
 
     processed = load_processed_log(processed_folder)
 
