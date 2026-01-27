@@ -48,12 +48,18 @@ def save_processed_log(folder: Path, processed: set):
     except OSError as e:
         print(f"Warning: could not write processed log ({log_path}): {e}")
 
-def extract_app_id(soup: BeautifulSoup) -> str | None:
+defdef extract_app_id(soup: BeautifulSoup) -> str | None:
+    # First try the explicit <link> tag
     link_tag = soup.find("link", rel="canonical")
     if link_tag and link_tag.get("href"):
-        m = re.search(r"/app/(\d+)/stats/", link_tag["href"])
+        m = re.search(r"/app/(\d+)/stats/?", link_tag["href"], re.IGNORECASE)
         if m:
             return m.group(1)
+
+    m = HTML_PATTERN.search(str(soup))
+    if m:
+        return m.group(1)
+
     return None
 
 
