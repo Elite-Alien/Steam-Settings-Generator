@@ -12,9 +12,10 @@ If you have any files like the "configs.overlay.ini", "sounds" (folder), "fonts"
 
 ## How to use as executable
 1. Make sure the application is executable. chmod +x or prompts in your GUI for your DE/WM/Compositor.
-2. Save HTML files to the same folder SSG.py is in while running the application.
-3. Follow any of the prompts that might appear.
-4. Done.
+2. Go to SteamDB and find your game.
+3. Save the page as an html file to the same folder SSG.py is in while running the application.
+4. Follow any of the prompts that might appear.
+5. Done.
 
 The GUI is very basic. It's nothing more than a simple Zenith/Zenity style window that runs while you save files. Though wih this method you can keep it running and marathon style many games in a matter of minutes. Once your done, close it and it will stop checking for HTML files.
 
