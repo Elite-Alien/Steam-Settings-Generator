@@ -4,9 +4,11 @@ import sys
 import re
 import json
 import argparse
+import difflib
 import pathlib
 import requests
 import shutil
+from pathlib import Path
 from collections import OrderedDict
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
@@ -22,6 +24,59 @@ APP_URL_TEMPLATE = "https://shared.fastly.steamstatic.com/community_assets/image
 PROCESSED_LOG = "blacklist"
 
 # ----------------------------------------------------------------------
+def _closest_folder(base_path: Path, html_name: str) -> Path | None:
+    candidates = [p for p in base_path.iterdir() if p.is_dir()]
+    if not candidates:
+        return None
+
+    scores = {
+        p: difflib.SequenceMatcher(
+            a=html_name.lower(), b=p.name.lower()
+        ).ratio()
+        for p in candidates
+    }
+    best_folder = max(scores, key=scores.get)
+
+    return best_folder if scores[best_folder] >= 0.6 else None
+
+def _copy_existing_images(
+    json_file: Path,
+    src_folder: Path,
+    dest_folder: Path,
+) -> set[str]:
+    """
+    Copy any images referenced in ``json_file`` that already exist in
+    ``src_folder`` to ``dest_folder``. Returns the set of filenames that were
+    found (so they can be excluded from later download).
+    """
+    try:
+        achievements = json.loads(json_file.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"Failed to read achievements JSON ({json_file}): {e}")
+        return set()
+
+    needed = set()
+    for ach in achievements:
+        for key in ("icon", "icongray", "icon_gray"):
+            val = ach.get(key)
+            if val:
+                needed.add(val)
+
+    found = set()
+    for img_name in needed:
+        src_path = src_folder / img_name
+        if src_path.is_file():
+            dest_path = dest_folder / img_name
+            try:
+                shutil.copy2(src_path, dest_path)
+                found.add(img_name)
+                print(f"Copied existing image {img_name} from {src_folder}")
+            except Exception as e:
+                print(f"Could not copy {img_name}: {e}")
+
+    return found
+
+
 def read_local_file(filepath: str) -> str:
     with open(filepath, "r", encoding="utf-8") as f:
         return f.read()
@@ -48,7 +103,7 @@ def save_processed_log(folder: Path, processed: set):
     except OSError as e:
         print(f"Warning: could not write processed log ({log_path}): {e}")
 
-defdef extract_app_id(soup: BeautifulSoup) -> str | None:
+def extract_app_id(soup: BeautifulSoup) -> str | None:
     # First try the explicit <link> tag
     link_tag = soup.find("link", rel="canonical")
     if link_tag and link_tag.get("href"):
@@ -147,7 +202,7 @@ def main():
     steam_settings.mkdir(parents=True, exist_ok=True)
     achievement_images.mkdir(parents=True, exist_ok=True)
 
-    extra_folder = script_dir / "extra"
+    extra_folder = script_dir / ".extra"
     if extra_folder.is_dir():
         for root, dirs, files in os.walk(extra_folder):
             rel_path = pathlib.Path(root).relative_to(extra_folder)
@@ -260,18 +315,31 @@ def main():
     processed_folder = script_dir
     processed = load_processed_log(processed_folder)
 
-    if args.html_path.name in processed or (app_id and app_id in processed):
-        print("Images already downloaded for this file or app‑id – skipping.")
+
+    html_folder = args.html_path.parent
+    closest = _closest_folder(html_folder, args.html_path.name)
+
+    if closest:
+        already_have = _copy_existing_images(
+            json_path,
+            closest,
+            achievement_images,
+        )
     else:
-        if not app_id:
-            print("No Steam app‑id found – image download skipped.")
+        already_have = set()
+        print("No similar folder with images found; will download all needed files.")
+
+    if app_id:
+        filenames = collect_image_names(soup)
+        filenames = [f for f in filenames if f not in already_have]
+
+        if filenames:
+            download_images(app_id, filenames, achievement_images)
+            print(f"Downloaded {len(filenames)} missing image(s) to {achievement_images}")
         else:
-            filenames = collect_image_names(soup)
-            if filenames:
-                download_images(app_id, filenames, achievement_images)
-                print(f"Downloaded {len(filenames)} image(s) to {achievement_images}")
-            else:
-                print("No image filenames detected – nothing to download.")
+            print("All required images already present – no download needed.")
+    else:
+        print("No Steam app‑id found – image download skipped.")
 
     dlc_numbers = set()
     for m in re.finditer(r'>\s*DLC\s+(\d+)\s*<', html_content, flags=re.IGNORECASE):
