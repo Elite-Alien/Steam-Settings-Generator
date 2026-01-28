@@ -1,17 +1,50 @@
 #!/usr/bin/env python3
-import os
-import sys
-import re
-import json
-import argparse
-import difflib
-import pathlib
-import requests
-import shutil
+import os, sys, re, json, argparse, difflib, pathlib, requests, shutil, threading, queue, time
 from pathlib import Path
 from collections import OrderedDict
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
+
+try:
+    import tkinter as tk
+    from tkinter import messagebox
+except Exception:
+    tk = None
+
+import shutil
+
+if shutil.which("zenity") is None:
+    print(
+        "⚠️  'zenity' not found – GUI prompts will fall back to console input "
+        "if tkinter cannot open a window."
+    )
+
+def _gui_yes_no(question: str) -> bool:
+    if tk is not None:
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            answer = messagebox.askyesno("Confirm", question)
+            root.destroy()
+            return answer
+        except Exception:
+            pass
+
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["zenity", "--question", "--title=Confirm", f"--text={question}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+    resp = input(f"{question} (Y/N): ").strip().lower()
+    return resp == "y"
 
 # ----------------------------------------------------------------------
 HTML_PATTERN = re.compile(
@@ -44,11 +77,7 @@ def _copy_existing_images(
     src_folder: Path,
     dest_folder: Path,
 ) -> set[str]:
-    """
-    Copy any images referenced in ``json_file`` that already exist in
-    ``src_folder`` to ``dest_folder``. Returns the set of filenames that were
-    found (so they can be excluded from later download).
-    """
+
     try:
         achievements = json.loads(json_file.read_text(encoding="utf-8"))
     except Exception as e:
@@ -169,32 +198,59 @@ def clean_title(raw_title: str) -> str:
 # ----------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Process SteamDB HTML file for achievements and DLC."
+        description="Scrape Steam achievement/DLC data from an HTML file."
     )
     parser.add_argument(
         "html_path",
-        type=pathlib.Path,
-        help="Full path to the HTML file (must end with .html)",
+        type=Path,
+        help="Path to the .html file to process",
     )
     args = parser.parse_args()
 
     if not args.html_path.is_file():
         print(f"File not found: {args.html_path}")
         sys.exit(1)
-    if args.html_path.suffix.lower() != ".html":
-        print("The supplied file must have a .html extension")
-        sys.exit(1)
 
-    html_content = read_local_file(str(args.html_path))
+    html_path = args.html_path
+    html_content = read_local_file(str(html_path))
     soup = BeautifulSoup(html_content, "html.parser")
 
-    h1_tag = soup.find("h1", itemprop="name")
-    if not h1_tag:
-        print("No <h1 itemprop='name'> tag found – cannot create output folder.")
-        sys.exit(1)
+    script_dir = pathlib.Path(__file__).resolve().parent
+    html_files = sorted(p for p in script_dir.iterdir() if p.suffix.lower() == ".html")
+
+    if not html_files:
+        print("No .html files found next to the script.")
+        sys.exit(0)
+
+    for html_path in html_files:
+        if not html_path.is_file():
+            print(f"File not found: {html_path}")
+            continue
+        if html_path.suffix.lower() != ".html":
+            print("The supplied file must have a .html extension")
+            continue
+
+        html_content = read_local_file(str(html_path))
+        soup = BeautifulSoup(html_content, "html.parser")
+
+        h1_tag = soup.find("h1", itemprop="name")
+        if not h1_tag:
+            print("No <h1 itemprop='name'> tag found – cannot create output folder.")
+            continue
 
     game_title = clean_title(h1_tag.text)
     script_dir = pathlib.Path(__file__).resolve().parent
+    html_files = sorted(p for p in script_dir.iterdir() if p.suffix.lower() == ".html")
+
+    if not html_files:
+        print("No .html files found next to the script.")
+        sys.exit(0)
+
+    for html_path in html_files:
+        if not html_path.is_file():
+            print(f"File not found: {html_path}")
+            continue
+
     base_folder = script_dir / game_title
     steam_settings = base_folder / "steam_settings"
     achievement_images = steam_settings / "achievement_images"
@@ -283,20 +339,14 @@ def main():
 
     multiplayer_achievements = [a for a in achievements if a["is_multiplayer"]]
     if multiplayer_achievements:
-        resp = input(
-            "Multiplayer achievements found. Remove them? (Y/N): "
-        ).strip().lower()
-        if resp == "y":
+        if _gui_yes_no("Multiplayer achievements found. Remove them?"):
             achievements = [a for a in achievements if not a["is_multiplayer"]]
 
     has_hidden_prefix = any(
         a["description"].startswith("Hidden achievement:") for a in achievements
     )
     if has_hidden_prefix:
-        resp = input(
-            'Clean descriptions that start with "Hidden achievement:"? (Y/N): '
-        ).strip().lower()
-        if resp == "y":
+        if _gui_yes_no('Clean descriptions that start with "Hidden achievement:"?'):
             for a in achievements:
                 if a["description"].startswith("Hidden achievement:"):
                     a["description"] = a["description"][
@@ -316,8 +366,8 @@ def main():
     processed = load_processed_log(processed_folder)
 
 
-    html_folder = args.html_path.parent
-    closest = _closest_folder(html_folder, args.html_path.name)
+    html_folder = html_path.parent
+    closest = _closest_folder(html_folder, html_path.name)
 
     if closest:
         already_have = _copy_existing_images(
@@ -389,5 +439,84 @@ def main():
 
     save_processed_log(processed_folder, processed)
 
+class WatcherUI(tk.Tk):
+    def __init__(self, file_queue: queue.Queue):
+        super().__init__()
+        self.title("SSG – Watching for HTML files")
+        self.geometry("300x80")
+        self.resizable(False, False)
+
+        self.file_queue = file_queue
+
+        self.counter_label = tk.Label(self, text="Files waiting: 0", font=("Helvetica", 12))
+        self.counter_label.pack(expand=True, pady=12)
+
+        self.after(300, self._refresh_counter)
+
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._stop_requested = False
+
+    def _refresh_counter(self):
+        pending = self.file_queue.qsize()
+        self.counter_label.config(text=f"Files waiting: {pending}")
+        self.after(300, self._refresh_counter)
+
+    def _on_close(self):
+        self._stop_requested = True
+        self.destroy()
+
+    @property
+    def stop_requested(self) -> bool:
+        return self._stop_requested
+
+def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Event):
+    processed: set[Path] = set()
+
+    while not stop_flag.is_set():
+        current_html = {p for p in folder.iterdir() if p.suffix.lower() == ".html"}
+        new_files = current_html - processed
+
+        for new_html in sorted(new_files):
+            file_queue.put(new_html)
+            processed.add(new_html)
+
+        time.sleep(2.0)
+
+def _run_gui_watcher():
+    folder = Path(__file__).resolve().parent
+    q: queue.Queue[Path] = queue.Queue()
+    stop_event = threading.Event()
+
+    watcher_thread = threading.Thread(
+        target=_watch_worker,
+        args=(folder, q, stop_event),
+        daemon=True,
+    )
+    watcher_thread.start()
+
+    ui = WatcherUI(q)
+    while not ui.stop_requested:
+        try:
+            html_path = q.get(timeout=0.5)
+        except queue.Empty:
+            ui.update()
+            continue
+
+        sys.argv = [sys.argv[0], str(html_path)]
+        try:
+            main()
+        except SystemExit:
+            pass
+        except Exception as exc:
+            print(f"Error processing {html_path}: {exc}")
+
+        ui.update()
+
+    stop_event.set()
+    watcher_thread.join()
+
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1:
+        main()
+    else:
+        _run_gui_watcher()
