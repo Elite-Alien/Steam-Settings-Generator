@@ -10,7 +10,12 @@ This script is basically those two combined but slightly altered in some areas. 
 ### Extra Folder
 If you have any files like the "configs.overlay.ini", "sounds" (folder), "fonts" (folder), "configs.user.ini", or other files this script does not make. Create a folder called ".extra" next to "SSG.py". (Yes "." before extra.) Place all desired files inside the folder. Every time you run SSG.py it will copy those files into the "steam_settings" folder for each game. The reasoning behind making the "extra" folder hidden is so you don't have a mistake happen when deleting other files. It gets out of the way and you will not misclick when doing a "shift + delete" or something. Nuking the extra folder while only wanting to delete a handful of your game folders that sit near it.
 
-## How to use
+## How to use as executable
+1. Make sure the application is executable. chmod +x or prompts in your GUI for your DE/WM/Compositor.
+2. Save HTML files to the same folder SSG.py is in while running the application.
+3. Done.
+
+## How to use in terminal
 1. Go to SteamDB and find your game.
 2. Save the page as an HTML file anywhere on your PC.
 4. Open a terminal write "python SSG.py /path-to-html/*.html".
