@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-import os, sys, re, json, argparse, difflib, pathlib, requests, shutil, threading, queue, time
+import os, sys, re, json, argparse, difflib, pathlib, requests, shutil, threading, queue, time, random
 from pathlib import Path
 from collections import OrderedDict
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
+global_ui = None
+
 try:
     import tkinter as tk
-    from tkinter import messagebox
+    from tkinter import messagebox, ttk
 except Exception:
     tk = None
 
@@ -45,6 +47,273 @@ def _gui_yes_no(question: str) -> bool:
 
     resp = input(f"{question} (Y/N): ").strip().lower()
     return resp == "y"
+
+#----------------------------------------------------------------------
+def _show_error(msg: str) -> None:
+    if tk is not None:
+        try:
+            messagebox.showerror("Error", msg)
+        except Exception:
+            pass
+    else:
+        print(msg)
+
+#----------------------------------------------------------------------
+def parse_appid(arg: str) -> str | None:
+    if arg.isdigit():
+        return arg
+
+    m = re.search(r"/app/(\d+)", arg)
+    if m:
+        return m.group(1)
+
+    return None
+
+import random
+import time
+
+PROXIES = None
+
+UA_LIST = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) Gecko/20100101 Firefox/123.0",
+]
+
+def _fetch_steamdb_html(appid: str) -> str | None:
+    url = f"https://steamdb.info/app/{appid}/stats/"
+
+    time.sleep(random.uniform(0.5, 1.2))
+
+    headers = {
+        "User-Agent": random.choice(UA_LIST),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://steamdb.info/",
+        "Connection": "keep-alive",
+    }
+
+    try:
+        resp = requests.get(url, timeout=20, headers=headers, proxies=PROXIES)
+        resp.raise_for_status()
+        return resp.text
+    except requests.HTTPError:
+        if resp.status_code == 403:
+            print(f"⚠️  SteamDB returned 403 for AppID {appid}.")
+        else:
+            print(f"HTTP error {resp.status_code} for AppID {appid}.")
+    except Exception as exc:
+        print(f"Failed to fetch SteamDB page for AppID {appid}: {exc}")
+
+    return None
+
+def _fetch_steamdb_html(appid: str) -> str | None:
+    """
+    Retrieve the SteamDB stats page for *appid*.
+    Returns the raw HTML or ``None`` on failure.
+    """
+    url = f"https://steamdb.info/app/{appid}/stats/"
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://steamdb.info/",
+        "Connection": "keep-alive",
+    }
+
+    time.sleep(0.3)
+
+    try:
+        resp = requests.get(url, timeout=20, headers=headers)
+        resp.raise_for_status()
+        return resp.text
+    except requests.HTTPError as http_err:
+        if resp.status_code == 403:
+            print(
+                f"⚠️  SteamDB returned 403 for AppID {appid}. "
+                "Try again later or use a VPN/proxy."
+            )
+        else:
+            print(f"HTTP error for AppID {appid}: {http_err}")
+    except Exception as exc:
+        print(f"Failed to fetch SteamDB page for AppID {appid}: {exc}")
+
+    return None
+
+
+def download_stats_html(appid: str) -> Path | None:
+    html_dir = Path(__file__).resolve().parent / ".html"
+    html_dir.mkdir(exist_ok=True)
+
+    html_text = _fetch_steamdb_html(appid)
+    if html_text is None:
+        return None
+
+    class _DummyResp:
+        def __init__(self, text: str):
+            self.text = text
+            self.content = text.encode("utf-8")
+
+    resp = _DummyResp(html_text)
+
+    html_path = html_dir / f"{appid}.html"
+    html_path.write_bytes(resp.content)
+
+    achievements = parse_steam_community(resp.text)
+
+    need_hidden = any(a["hidden"] == 0 for a in achievements)
+
+    if need_hidden:
+        hidden_map = parse_steamdb_hidden(resp.text)
+        for ach in achievements:
+            if ach["name"] in hidden_map:
+                ach["hidden"] = hidden_map[ach["name"]]
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    base_folder = Path(__file__).resolve().parent / clean_title(
+        soup.find("h1", itemprop="name").text
+        if soup.find("h1", itemprop="name")
+        else f"App_{appid}"
+    )
+    steam_settings = base_folder / "steam_settings"
+    achievement_images = steam_settings / "achievement_images"
+
+    steam_settings.mkdir(parents=True, exist_ok=True)
+    achievement_images.mkdir(parents=True, exist_ok=True)
+
+    json_path = steam_settings / "achievements.json"
+    json_path.write_text(
+        json.dumps(achievements, indent=4, ensure_ascii=False), encoding="utf-8"
+    )
+    print(f"Achievements JSON written to {json_path}")
+
+    filenames = collect_image_names(soup)
+    download_images(appid, filenames, achievement_images, progress_cb=_noop_progress)
+
+    return html_path
+
+#----------------------------------------------------------------------
+def parse_steam_community(html: str) -> list[dict]:
+    soup = BeautifulSoup(html, "html.parser")
+    achievements = []
+
+    for div in soup.find_all("div", id=lambda v: v and v.startswith("achievement-")):
+        name = div["id"].split("-", 1)[1]
+
+        display_tag = div.find(class_="achievement_name")
+        display_name = display_tag.text.strip() if display_tag else "Unknown"
+
+        desc_tag = div.find(class_="achievement_desc")
+        description = desc_tag.text.strip() if desc_tag else "No description"
+
+        icon_tag = div.find(class_="achievement_image")
+        icon = get_image_filename(icon_tag)
+
+        icon_small_tag = div.find(class_="achievement_image_small")
+        icon_small = get_image_filename(icon_small_tag)
+
+        hidden = 0
+
+        is_multiplayer = (
+            div.find("div", class_="achievement_group")
+            and div.find("div", class_="achievement_group").text.strip()
+            == "Multiplayer"
+        )
+
+        achievements.append(
+            {
+                "name": name,
+                "defaultvalue": 0,
+                "displayName": display_name,
+                "hidden": hidden,
+                "description": description,
+                "icon": icon,
+                "icongray": icon_small,
+                "icon_gray": icon_small,
+                "is_multiplayer": is_multiplayer,
+            }
+        )
+    return achievements
+
+#----------------------------------------------------------------------
+def parse_steamdb_hidden(html: str) -> dict:
+    soup = BeautifulSoup(html, "html.parser")
+    hidden_map = {}
+
+    for div in soup.find_all("div", id=lambda v: v and v.startswith("achievement-")):
+        name = div["id"].split("-", 1)[1]
+        if div.find("span", class_="achievement_spoiler") or div.find(
+            "i", string="Hidden achievement:"
+        ):
+            hidden_map[name] = 1
+    return hidden_map
+
+#----------------------------------------------------------------------
+def _rewrite_image_urls(html: str, folder_name: str) -> str:
+    """
+    Replace absolute Steam image URLs with relative paths that point to
+    ``folder_name`` (e.g. "achievement_images/…").
+    """
+    def repl(match):
+        filename = Path(match.group(1)).name
+        return f'src="{folder_name}/{filename}"'
+
+    pattern = re.compile(r'src="[^"]*?/([^/]+\.jpg)"')
+    return pattern.sub(repl, html)
+
+
+#----------------------------------------------------------------------
+class JobTracker:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.queued = 0
+        self.active = 0
+
+    def add_job(self, n: int = 1):
+        with self._lock:
+            self.queued += n
+
+    def start_job(self):
+        self._busy = True
+        self.progress["value"] = 0
+        self.progress.pack()
+        self.entry.configure(state="disabled")
+
+    def finish_job(self):
+        self._busy = False
+        self.progress.pack_forget()
+        self.entry.configure(state="normal")
+
+    def finish_job(self):
+        with self._lock:
+            self.active = max(0, self.active - 1)
+
+    def snapshot(self):
+        with self._lock:
+            return self.queued, self.active
+
+
+job_tracker = JobTracker()
+
+def _run_main_with_progress():
+    if global_ui is not None:
+        global_ui.progress["maximum"] = 1
+        global_ui.progress["value"] = 0
+        global_ui.progress.pack()
+
+    try:
+        main()
+    finally:
+        if global_ui is not None:
+            global_ui.progress["value"] = 1
+            global_ui.update_idletasks()
+            time.sleep(0.2)
+            global_ui.progress.pack_forget()
 
 # ----------------------------------------------------------------------
 HTML_PATTERN = re.compile(
@@ -133,7 +402,6 @@ def save_processed_log(folder: Path, processed: set):
         print(f"Warning: could not write processed log ({log_path}): {e}")
 
 def extract_app_id(soup: BeautifulSoup) -> str | None:
-    # First try the explicit <link> tag
     link_tag = soup.find("link", rel="canonical")
     if link_tag and link_tag.get("href"):
         m = re.search(r"/app/(\d+)/stats/?", link_tag["href"], re.IGNORECASE)
@@ -162,11 +430,17 @@ def collect_image_names(soup: BeautifulSoup) -> list[str]:
     return list(names)
 
 
-def download_images(app_id: str, filenames: list[str], dest_folder: Path):
+def download_images(
+    app_id: str,
+    filenames: list[str],
+    dest_folder: Path,
+    progress_cb: callable | None = None,
+):
     base_url = APP_URL_TEMPLATE.format(app_id=app_id)
     dest_folder.mkdir(parents=True, exist_ok=True)
 
-    for fname in filenames:
+    total = len(filenames)
+    for i, fname in enumerate(filenames, start=1):
         url = urljoin(base_url, fname)
         try:
             resp = requests.get(url, timeout=15)
@@ -175,6 +449,11 @@ def download_images(app_id: str, filenames: list[str], dest_folder: Path):
         except Exception as e:
             print(f"Failed {url}: {e}")
 
+        if progress_cb is not None:
+            try:
+                progress_cb(i, total)
+            except Exception:
+                pass
 
 def get_image_filename(tag) -> str:
     if not tag:
@@ -194,6 +473,8 @@ def clean_title(raw_title: str) -> str:
     title = raw_title.strip()
     return safe_folder_name(title)
 
+def _noop_progress(_: int, __: int) -> None:
+    pass
 
 # ----------------------------------------------------------------------
 def main():
@@ -383,8 +664,21 @@ def main():
         filenames = collect_image_names(soup)
         filenames = [f for f in filenames if f not in already_have]
 
+        progress_fn = (
+            global_ui.update_progress
+            if (global_ui is not None and hasattr(global_ui, "update_progress"))
+            else _noop_progress
+        )
+
+        download_images(
+            app_id,
+            filenames,
+            achievement_images,
+            progress_cb=global_ui.update_progress
+                         if global_ui is not None else _noop_progress,
+        )
+        
         if filenames:
-            download_images(app_id, filenames, achievement_images)
             print(f"Downloaded {len(filenames)} missing image(s) to {achievement_images}")
         else:
             print("All required images already present – no download needed.")
@@ -439,28 +733,115 @@ def main():
 
     save_processed_log(processed_folder, processed)
 
+
+# ------------------------------------------------------------
+def _run_main_in_thread(html_path: Path):
+    old_argv = sys.argv[:]
+    sys.argv = [sys.argv[0], str(html_path)]
+    try:
+        main()
+    finally:
+        sys.argv = old_argv
+
+# ------------------------------------------------------------
+def parse_appid(arg: str) -> str | None:
+    if arg.isdigit():
+        return arg
+    m = re.search(r"/app/(\d+)", arg)
+    return m.group(1) if m else None
+
+# ------------------------------------------------------------
 class WatcherUI(tk.Tk):
     def __init__(self, file_queue: queue.Queue):
         super().__init__()
-        self.title("SSG – Watching for HTML files")
-        self.geometry("300x80")
+        self.title("SSG: Watching for HTML files")
+        self.geometry("500x500")
         self.resizable(False, False)
 
         self.file_queue = file_queue
+        self._busy = False
 
-        self.counter_label = tk.Label(self, text="Files waiting: 0", font=("Helvetica", 12))
-        self.counter_label.pack(expand=True, pady=12)
+        self.input_var = tk.StringVar()
+        input_frame = tk.Frame(self)
+        input_frame.pack(pady=(10, 0), fill="x", padx=10)
+
+        tk.Label(
+            input_frame,
+            text="Enter Steam/SteamDB Link or AppID:",
+            anchor="w",
+        ).pack(side="top", anchor="w")
+
+        self.entry = tk.Entry(
+            input_frame,
+            textvariable=self.input_var,
+            width=50,
+        )
+        self.entry.pack(side="top", fill="x", pady=5)
+        self.entry.bind("<Return>", self._on_enter)
+
+        tk.Frame(self, height=2, bg="#cccccc").pack(fill="x", pady=8)
+
+        self.progress = ttk.Progressbar(self, orient="horizontal",
+                                        length=260, mode="determinate")
+        self.progress.pack(pady=10)
+        self.progress["value"] = 0
+        self.progress.pack_forget()
+
+        self.counter_label = tk.Label(
+            self,
+            text="Job Count: 0",
+            font=("Helvetica", 12),
+        )
+        self.counter_label.pack(pady=(10, 0))
 
         self.after(300, self._refresh_counter)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._stop_requested = False
+    # ------------------------------------------------------------------
+    def _on_enter(self, event=None):
+        if self._busy:
+            return
 
+        raw = self.input_var.get().strip()
+        if not raw:
+            return
+
+        appid = parse_appid(raw)
+        if not appid:
+            print(f"Could not extract AppID from '{raw}'")
+            return
+
+        html_path = download_stats_html(appid)
+        if html_path is None:
+            _show_error(f"Download failed for AppID {appid}")
+            return
+
+        self.input_var.set("")
+        self.file_queue.put(html_path)
+    # ------------------------------------------------------------------
     def _refresh_counter(self):
-        pending = self.file_queue.qsize()
-        self.counter_label.config(text=f"Files waiting: {pending}")
+        queued, active = job_tracker.snapshot()
+        displayed = queued + active
+        self.counter_label.config(text=f"Job Count: {displayed}")
         self.after(300, self._refresh_counter)
+    # ------------------------------------------------------------------
+    def start_job(self):
+        self._busy = True
+        self.progress["value"] = 0
+        self.progress.pack()
 
+    def finish_job(self):
+        self._busy = False
+        self.progress.pack_forget()
+
+    # ------------------------------------------------------------------
+    def update_progress(self, current: int, total: int):
+        self.progress["maximum"] = total
+        self.progress["value"] = current
+        self.update_idletasks()
+
+    # ------------------------------------------------------------------
     def _on_close(self):
         self._stop_requested = True
         self.destroy()
@@ -469,24 +850,33 @@ class WatcherUI(tk.Tk):
     def stop_requested(self) -> bool:
         return self._stop_requested
 
+global_ui = None
+
 def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Event):
     processed: set[Path] = set()
-
     while not stop_flag.is_set():
+
         current_html = {p for p in folder.iterdir() if p.suffix.lower() == ".html"}
         new_files = current_html - processed
 
         for new_html in sorted(new_files):
+
+            job_tracker.add_job()
+
             file_queue.put(new_html)
             processed.add(new_html)
 
         time.sleep(2.0)
 
 def _run_gui_watcher():
+    global global_ui
     folder = Path(__file__).resolve().parent
-    q: queue.Queue[Path] = queue.Queue()
-    stop_event = threading.Event()
 
+    q: queue.Queue[Path] = queue.Queue()
+    global_ui = WatcherUI(q)
+    ui = global_ui
+
+    stop_event = threading.Event()
     watcher_thread = threading.Thread(
         target=_watch_worker,
         args=(folder, q, stop_event),
@@ -494,7 +884,6 @@ def _run_gui_watcher():
     )
     watcher_thread.start()
 
-    ui = WatcherUI(q)
     while not ui.stop_requested:
         try:
             html_path = q.get(timeout=0.5)
@@ -503,19 +892,58 @@ def _run_gui_watcher():
             continue
 
         sys.argv = [sys.argv[0], str(html_path)]
+
         try:
-            main()
+            ui.start_job()
+            job_tracker.start_job()
+            _run_main_with_progress()
         except SystemExit:
             pass
         except Exception as exc:
             print(f"Error processing {html_path}: {exc}")
-
+        finally:
+            ui.finish_job()
+            job_tracker.finish_job()
         ui.update()
 
     stop_event.set()
     watcher_thread.join()
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Steam achievement scraper – GUI watcher or single‑run mode."
+    )
+    parser.add_argument("-appid", type=str, help="Numeric Steam AppID")
+    parser.add_argument("-link", type=str, help="SteamDB or Steam store URL")
+    args, _ = parser.parse_known_args()
+
+    # --------------------------------------------------------------
+    if args.appid or args.link:
+        raw = args.appid or args.link
+        appid = parse_appid(raw)
+
+        if not appid:
+            print(f"Could not extract AppID from '{raw}'")
+            sys.exit(1)
+
+        html_path = download_stats_html(appid)
+        if html_path is None:
+            sys.exit(1) 
+
+        sys.argv = [sys.argv[0], str(html_path)]
+        try:
+            main()
+        finally:
+            try:
+                if html_path.is_file():
+                    html_path.unlink()
+                sibling = html_path.parent / html_path.stem
+                if sibling.is_dir():
+                    shutil.rmtree(sibling)
+            except Exception:
+                pass
+        sys.exit(0)
+
     if len(sys.argv) > 1:
         main()
     else:
