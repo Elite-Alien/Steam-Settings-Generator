@@ -1,3 +1,6 @@
+#Testing Only
+This branch is something I may never go forward with, but a concept. It still functions like the other, but the actual other elements of this are a WIP and sort of a concept. Since SteamDB blocks a lot of requests the only possible two ways is maybe a proxy and maybe using one of those CDN methods to get around their 403. However, I don't know if I will continue forward with this method. It's messy, but if anyone does find this and wants to dabble with it, go for it.
+
 # Steam-Settings-Generator
 This tool creates the achievements and DLC files needed for steam_settings, downloads achievement images, makes the steam_appid.txt, and copies over your defined files into a steam_settings folder.
 
