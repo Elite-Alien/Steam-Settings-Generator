@@ -1032,8 +1032,6 @@ class WatcherUI(tk.Tk):
                         f"⚠️  App‑id mismatch (temp={temp_data['appid']}, "
                         f"file={stored_appid}); skipping game folder removal."
                     )
-            else:
-                print(f"⚠️  No steam_appid.txt in {steam_settings}; skipping game folder removal.")
 
         try:
             prog_path = pathlib.Path(__file__).resolve().parent / ".temp" / "progress.json"
