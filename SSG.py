@@ -442,6 +442,12 @@ def main():
             f"HTMLFile={html_path.name}\n"
             f"HTMLFOLDER={html_folder_name}\n"
         )
+        hidden_appid = game_dir / f".{app_id}"
+        try:
+            hidden_appid.touch(exist_ok=True)
+
+        except Exception as e:
+            print(f"Failed to create hidden app‑id file {hidden_appid}: {e}")
         try:
             temp_file_path.write_text(temp_content, encoding="utf-8")
         except Exception:
@@ -999,39 +1005,47 @@ class WatcherUI(tk.Tk):
                     print(f"🗑️  Deleted HTML file {html_file_path}")
                 except Exception as e:
                     print(f"⚠️  Could not delete HTML file {html_file_path}: {e}")
-#NOTE TO SELF - Make sure to add a temp hidden file inside of the created gamedir that relates to this game.
-#Then make the GAMEDIR section here reference it and delete said folder based on it. Then fall back to the appid inside "steam_settings" if not found and 
-# if "steam_settings is not found, fall back to the GAMEDIR variable. This way there is a check system in place to not delete the wrong folder. In case there was a mix up with naming.
-# Yes go paranoid mode!!!!!
+
         if {"GAMEDIR", "appid"}.issubset(temp_data):
             game_dir = pathlib.Path(temp_data["GAMEDIR"])
             steam_settings = game_dir / "steam_settings"
             appid_file = steam_settings / "steam_appid.txt"
 
-            if not appid_file.is_file():
+            hidden_path = game_dir / f".{temp_data['appid']}"
+            if hidden_path.is_file():
                 try:
                     shutil.rmtree(game_dir, ignore_errors=True)
-                    print(f"🗑️  Deleted game folder {game_dir} (steam_settings missing)")
+                    print(f"🗑️  Deleted game folder {game_dir} (found hidden .{temp_data['appid']})")
                 except Exception as e:
                     print(f"⚠️  Could not delete game folder {game_dir}: {e}")
             else:
-                try:
-                    stored_appid = appid_file.read_text(encoding="utf-8").strip()
-                except Exception as e:
-                    stored_appid = ""
-                    print(f"⚠️  Could not read {appid_file}: {e}")
-
-                if stored_appid == temp_data["appid"]:
+                if not appid_file.is_file():
                     try:
                         shutil.rmtree(game_dir, ignore_errors=True)
-                        print(f"🗑️  Deleted game folder {game_dir}")
+                        print(f"🗑️  Deleted game folder {game_dir} (steam_appid.txt missing)")
                     except Exception as e:
                         print(f"⚠️  Could not delete game folder {game_dir}: {e}")
                 else:
-                    print(
-                        f"⚠️  App‑id mismatch (temp={temp_data['appid']}, "
-                        f"file={stored_appid}); skipping game folder removal."
-                    )
+                    try:
+                        stored_appid = appid_file.read_text(encoding="utf-8").strip()
+                    except Exception as e:
+                        stored_appid = ""
+                        print(f"⚠️  Could not read {appid_file}: {e}")
+
+                    if stored_appid == temp_data["appid"]:
+                        try:
+                            shutil.rmtree(game_dir, ignore_errors=True)
+                            print(f"🗑️  Deleted game folder {game_dir} (appid match)")
+                        except Exception as e:
+                            print(f"⚠️  Could not delete game folder {game_dir}: {e}")
+                    else:
+                        try:
+                            shutil.rmtree(game_dir, ignore_errors=True)
+                            print(
+                                f"🗑️  Deleted game folder {game_dir} (fallback to GAMEDIR from .temp file)"
+                            )
+                        except Exception as e:
+                            print(f"⚠️  Could not delete game folder {game_dir}: {e}")
 
         try:
             prog_path = pathlib.Path(__file__).resolve().parent / ".temp" / "progress.json"
