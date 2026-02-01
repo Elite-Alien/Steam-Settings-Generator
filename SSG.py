@@ -8,6 +8,8 @@ from bs4 import BeautifulSoup
 
 all_html_files: list[Path] = []
 file_status: dict[Path, str] = {}
+_prompt_handled: dict[Path, bool] = {}
+_download_done: dict[Path, bool] = {}
 
 def _terminal_progress(current: int, total: int) -> None:
     percent = int(current / total * 100)
@@ -106,8 +108,6 @@ class JobTracker:
 
 
 job_tracker = JobTracker()
-
-_pause_state: dict[Path, tuple[bool, int]] = {}
 
 def _run_main_with_progress():
     if global_ui is not None:
@@ -209,6 +209,9 @@ def _hidden_cleanup_needed(html_name: str, processed: set) -> bool:
 def save_processed_log(folder: Path, processed: set) -> None:
     pass
 
+def _load_progress_state_fresh() -> dict:
+    return load_progress_state()
+
 def load_progress_state(folder: Path | None = None) -> dict:
     if folder is None:
         folder = pathlib.Path(__file__).resolve().parent / ".temp"
@@ -283,27 +286,35 @@ def collect_image_names(soup: BeautifulSoup) -> list[str]:
             names.add(f"{m.group(1)}.jpg")
     return list(names)
 
-
 def download_images(
     app_id: str,
     filenames: list[str],
     dest_folder: Path,
     progress_cb: callable | None = None,
-):
+) -> int:  # ← now returns the number of files downloaded
     base_url = APP_URL_TEMPLATE.format(app_id=app_id)
     dest_folder.mkdir(parents=True, exist_ok=True)
 
     total = len(filenames)
     temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
 
+    downloaded_files = set(dest_folder.iterdir())
+    downloaded_count = 0
+
     for i, fname in enumerate(filenames, start=1):
-        url = urljoin(base_url, fname)
-        try:
-            resp = requests.get(url, timeout=15)
-            resp.raise_for_status()
-            (dest_folder / fname).write_bytes(resp.content)
-        except Exception as e:
-            print(f"Failed {url}: {e}")
+        file_path = dest_folder / fname
+
+        if file_path not in downloaded_files:
+            url = urljoin(base_url, fname)
+            try:
+                resp = requests.get(url, timeout=15)
+                resp.raise_for_status()
+                file_path.write_bytes(resp.content)
+                downloaded_files.add(file_path)
+                downloaded_count += 1
+                print(f"Downloaded {file_path.name} to {dest_folder}")
+            except Exception as e:
+                print(f"Failed {url}: {e}")
 
         if progress_cb is not None:
             try:
@@ -317,6 +328,8 @@ def download_images(
             state = load_progress_state(temp_dir)
             state[html_path.name] = {"percent": percent}
             save_progress_state(state, temp_dir)
+
+    return downloaded_count
 
 def get_image_filename(tag) -> str:
     if not tag:
@@ -340,6 +353,8 @@ def _noop_progress(_: int, __: int) -> None:
     pass
 
 def _ui_progress(cur: int, tot: int, html_path: Path, ui: WatcherUI, folder: Path):
+    if _prompt_handled.get(html_path, False):
+        return
     widgets = ui._row_widgets.get(html_path)
     if not widgets:
         return
@@ -350,7 +365,7 @@ def _ui_progress(cur: int, tot: int, html_path: Path, ui: WatcherUI, folder: Pat
     percent = int(cur / tot * 100)
     perc.config(text=f"{percent}%")
     ui.update_idletasks()
-    state = load_progress_state(folder)
+    state = _load_progress_state_fresh()
     state[html_path.name] = {"percent": percent}
     save_progress_state(state, folder)
 
@@ -519,28 +534,28 @@ def main():
         .get("percent", 0) == 100
     )
 
-    if multiplayer_achievements and not (already_done):
-        if _gui_yes_no("Multiplayer achievements found. Remove them?"):
-            achievements = [a for a in achievements if not a["is_multiplayer"]]
-
     has_hidden_prefix = any(
         a["description"].startswith("Hidden achievement:") for a in achievements
     )
-    if has_hidden_prefix:
-        if not already_done:
-            if _hidden_cleanup_needed(html_path.name, processed_html_names):
-                if _gui_yes_no('Clean descriptions that start with "Hidden achievement:"?'):
+
+    if not _prompt_handled.get(html_path, False):
+        if multiplayer_achievements and not already_done:
+            if _gui_yes_no("Multiplayer achievements found. Remove them?"):
+                achievements = [a for a in achievements if not a["is_multiplayer"]]
+
+        if has_hidden_prefix:
+            if not already_done:
+                if _hidden_cleanup_needed(html_path.name, processed_html_names):
+                    if _gui_yes_no('Clean descriptions that start with "Hidden achievement:"?'):
+                        for a in achievements:
+                            if a["description"].startswith("Hidden achievement:"):
+                                a["description"] = a["description"][len("Hidden achievement:"):].lstrip()
+                else:
                     for a in achievements:
                         if a["description"].startswith("Hidden achievement:"):
-                            a["description"] = a["description"][
-                                len("Hidden achievement:") :
-                            ].lstrip()
-            else:
-                for a in achievements:
-                    if a["description"].startswith("Hidden achievement:"):
-                        a["description"] = a["description"][
-                            len("Hidden achievement:") :
-                        ].lstrip()
+                            a["description"] = a["description"][len("Hidden achievement:"):].lstrip()
+
+        _prompt_handled[html_path] = True
 
     for a in achievements:
         a.pop("is_multiplayer", None)
@@ -574,57 +589,35 @@ def main():
         for p in achievement_images.iterdir()
         if p.is_file() and p.suffix.lower() == ".jpg"
     }
-    already_present = already_have.union(existing_local)
 
+    already_present = already_have.union(existing_local)
     missing_filenames = [f for f in all_filenames if f not in already_present]
 
     if app_id and missing_filenames:
-        progress_cb = _get_progress_cb(app_id, html_path) or _terminal_progress
-        download_images(
-            app_id,
-            missing_filenames,
-            achievement_images,
-            progress_cb=progress_cb,
-        )
-        print(f"Downloaded {len(missing_filenames)} missing image(s) to {achievement_images}")
+        if _download_done.get(html_path):
+            missing_filenames = []
+        else:
+            progress_cb = _get_progress_cb(app_id, html_path) or _terminal_progress
+            downloaded_cnt = download_images(
+                app_id,
+                missing_filenames,
+                achievement_images,
+                progress_cb=progress_cb,
+            )
+            print(f"Downloaded {len(missing_filenames)} missing image(s) to {achievement_images}")
+            _download_done[html_path] = True
+            missing_filenames = []
     elif app_id:
         print("All required images already present – no download needed.")
     else:
         print("No Steam app‑id found – image download skipped.")
 
-        filenames = [f for f in filenames if f not in already_present]
-
-        if app_id:
-            filenames = collect_image_names(soup)
-            filenames = [f for f in filenames if f not in already_have]
-
-            progress_cb = _get_progress_cb(app_id, html_path) or _terminal_progress
-
-            if global_ui is not None and hasattr(global_ui, "_row_widgets"):
-                progress_cb = lambda cur, tot: _ui_progress(cur, tot, html_path, global_ui, script_dir)
-            def _row_progress(cur: int, tot: int):
-                cb = _get_progress_cb(app_id, html_path)
-                if cb:
-                   try:
-                      cb(cur, tot)
-                      return
-                   except Exception:
-                       pass
-
-                _terminal_progress(cur, tot)
-
-            download_images(
-                app_id,
-                filenames,
-                achievement_images,
-                progress_cb=_row_progress,
-            )
-
 def _wrapped_download(app_id: str, filenames: list[str], dest: Path, cb: callable = _terminal_progress):
-    start = _pause_state.get(html_path, (False, 0))[1]
-    for i, fname in enumerate(filenames[start:], start=start + 1):
-        if _pause_state.get(html_path, (False, 0))[0]:
-            break
+    html_path = globals().get("html_path")
+    if isinstance(html_path, Path) and _download_done.get(html_path):
+        return
+
+    for i, fname in enumerate(filenames, start=1):
         url = urljoin(APP_URL_TEMPLATE.format(app_id=app_id), fname)
         try:
             resp = requests.get(url, timeout=15)
@@ -642,29 +635,6 @@ def _wrapped_download(app_id: str, filenames: list[str], dest: Path, cb: callabl
             percent = int(i / len(filenames) * 100)
             state[html_path.name] = {"percent": percent}
             save_progress_state(state, temp_dir)
-
-        if app_id:
-            all_filenames = collect_image_names(soup)
-
-            existing_local = {
-                p.name
-                for p in achievement_images.iterdir()
-                if p.is_file() and p.suffix.lower() == ".jpg"
-            }
-
-            already_present = already_have.union(existing_local)
-            filenames = [f for f in all_filenames if f not in already_present]
-            progress_cb = _get_progress_cb(app_id, html_path)
-
-            if filenames:
-                progress_cb = _get_progress_cb(app_id, html_path) or _terminal_progress
-                _wrapped_download(app_id, filenames, achievement_images, cb=progress_cb)
-                print(f"Downloaded {len(filenames)} missing image(s) to {achievement_images}")
-            else:
-                print("All required images already present – no download needed.")
-        else:
-            print("No Steam app‑id found – image download skipped.")
-
 
     dlc_numbers = set()
     for m in re.finditer(r'>\s*DLC\s+(\d+)\s*<', html_content, flags=re.IGNORECASE):
@@ -778,7 +748,7 @@ def _run_main_in_thread(html_path: Path):
 
         if global_ui is not None:
             if _mark_complete_if_success(html_path):
-                progress_state[html_path.name] = {"percent": 100}
+                _load_progress_state_fresh()[html_path.name] = {"percent": 100}
                 temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
                 save_progress_state(progress_state, temp_dir)
 
@@ -922,19 +892,7 @@ class WatcherUI(tk.Tk):
                 prog["value"] = 100
                 percent_lbl.config(text=f"{percent}%")
 
-            state = _pause_state.get(path, (False, 0))
-            btn_text = "▶" if state[0] else "⏸"
-
-            if saved and saved.get("percent") == 100:
-                ctrl_btn = None
-            else:
-                ctrl_btn = Button(
-                    row,
-                    text=btn_text,
-                    width=2,
-                    command=lambda p=path: self._toggle_pause(p),
-                )
-                ctrl_btn.grid(row=0, column=4, padx=2)
+            ctrl_btn = None
 
             close_btn = Button(
                 row,
@@ -943,7 +901,7 @@ class WatcherUI(tk.Tk):
                 fg="red",
                 command=lambda p=path: self._confirm_remove(p),
             )
-            close_btn.grid(row=0, column=5, padx=2)
+            close_btn.grid(row=0, column=4, padx=2)
 
             path_lbl = Label(
                 row,
@@ -952,7 +910,7 @@ class WatcherUI(tk.Tk):
                 cursor="hand2",
                 font=("Helvetica", 9, "underline"),
             )
-            path_lbl.grid(row=1, column=1, columnspan=5, sticky="w", pady=(2, 0))
+            path_lbl.grid(row=1, column=1, columnspan=4, sticky="w", pady=(2, 0))
             path_lbl.bind(
                 "<Button-1>",
                 lambda e, p=path.parent: _open_folder(p),
@@ -966,11 +924,6 @@ class WatcherUI(tk.Tk):
             }
 
     # ------------------------------------------------------------
-    def _toggle_pause(self, path: Path):
-        paused, idx = _pause_state.get(path, (False, 0))
-        _pause_state[path] = (not paused, idx)
-        btn = self._row_widgets[path]["ctrl"]
-        btn.config(text="▶" if not paused else "⏸")
 
     # ------------------------------------------------------------
     def _confirm_remove(self, html_path: Path) -> None:
@@ -1059,6 +1012,15 @@ class WatcherUI(tk.Tk):
         except Exception as e:
             print(f"⚠️  Could not update progress.json: {e}")
 
+        if isinstance(self.progress_state, dict):
+            self.progress_state.pop(html_path.name, None)
+        try:
+            global progress_state
+            if isinstance(progress_state, dict):
+                progress_state.pop(html_path.name, None)
+        except NameError:
+            pass
+
         try:
             html_path.unlink(missing_ok=True)
         except Exception as e:
@@ -1104,18 +1066,47 @@ def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Ev
     processed: set[str] = set()
 
     progress_state = load_progress_state()
-    
+    _progress_path = pathlib.Path(__file__).resolve().parent / ".temp" / "progress.json"
+    _last_mtime = _progress_path.stat().st_mtime if _progress_path.is_file() else 0
+
+    def _progress_reload_json():
+        nonlocal progress_state, _last_mtime
+        try:
+            if _progress_path.is_file():
+                cur_mtime = _progress_path.stat().st_mtime
+                if cur_mtime != _last_mtime:
+                    progress_state = load_progress_state()
+                    _last_mtime = cur_mtime
+        except Exception:
+            pass
+
     while not stop_flag.is_set():
+        _progress_reload_json()
         current_html = {p for p in folder.iterdir() if p.suffix.lower() == ".html"}
         new_files = {p for p in current_html if p.name not in processed}
 
         if new_files:
-            print(f"Detected HTML files: {new_files}")
+            print(f"Detected new HTML files: {new_files}")
             for new_html in sorted(new_files):
+                try:
+                    prog_path = pathlib.Path(__file__).resolve().parent / ".temp" / "progress.json"
+                    if prog_path.is_file():
+                        prog_data = json.loads(prog_path.read_text(encoding="utf-8"))
+                        if new_html.name in prog_data:
+                            del prog_data[new_html.name]
+                            with prog_path.open("w", encoding="utf-8") as f:
+                                json.dump(prog_data, f, indent=2, ensure_ascii=False)
+                except Exception:
+                    pass
+
+                if isinstance(progress_state, dict):
+                    progress_state.pop(new_html.name, None)
+
                 all_html_files.append(new_html)
                 file_status[new_html] = "waiting"
                 file_queue.put(new_html)
                 processed.add(new_html.name)
+
                 job_tracker.add_job()
 
                 def _process(p):
@@ -1162,7 +1153,6 @@ def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Ev
                     global_ui.refresh_file_list(all_html_files, file_status)
 
                 globals()["html_path"] = html_path
-                _pause_state[html_path] = (False, 0)
 
                 threading.Thread(
                     target=_run_main_in_thread,
@@ -1182,7 +1172,7 @@ def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Ev
                     global_ui.refresh_file_list(all_html_files, file_status)
 
                 if _mark_complete_if_success(html_path):
-                    progress_state[html_path.name] = {"percent": 100}
+                    _load_progress_state_fresh()[html_path.name] = {"percent": 100}
                     temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
                     save_progress_state(progress_state, temp_dir)
 
