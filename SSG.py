@@ -199,7 +199,6 @@ def read_local_file(filepath: str) -> str:
     with open(filepath, "r", encoding="utf-8") as f:
         return f.read()
 
-
 def load_processed_log(folder: Path) -> set:
     return set()
 
@@ -843,47 +842,60 @@ class WatcherUI(tk.Tk):
             except Exception:
                 title = path.stem
 
-            icon_url = None
-            img_tag = soup.find("img", class_="app-icon")
-            if img_tag:
-                icon_url = img_tag.get("src")
+            row_frame = Frame(self.inner_frame, bd=3, relief="solid", padx=5, pady=5)
+            row_frame.grid(row=idx, column=0, sticky="ew", pady=7)
+            row_frame.columnconfigure(0, weight=1)
 
-            row = Frame(self.inner_frame, bd=1, relief="solid", padx=5, pady=5)
-            row.grid(row=idx, column=0, sticky="ew", pady=4)
-            row.columnconfigure(2, weight=1)
+            top_frame = Frame(row_frame)
+            top_frame.grid(row=0, column=0, sticky="ew")
 
-            if icon_url:
-                placeholder = PhotoImage(width=32, height=32)
-                icon_label = Label(row, image=placeholder)
-                icon_label.image = placeholder
-                icon_label.grid(row=0, column=0, rowspan=2, padx=4)
+            top_frame.columnconfigure(0, weight=1)
+            top_frame.columnconfigure(1, weight=0)
+            top_frame.columnconfigure(2, weight=0)
+            top_frame.columnconfigure(3, weight=0)
+            top_frame.columnconfigure(4, weight=0)
 
-                def _load_icon(url: str, lbl: Label):
-                    try:
-                        data = requests.get(url, timeout=10).content
-                        img = PhotoImage(data=data)
-                        lbl.configure(image=img)
-                        lbl.image = img
-                    except Exception:
-                        pass
+            name_label = Label(top_frame, text=title, font=("Helvetica", 11, "bold"), anchor="w")
+            name_label.grid(row=0, column=0, sticky="w", padx=(0, 10))
 
-                threading.Thread(
-                    target=_load_icon,
-                    args=(icon_url, icon_label),
-                    daemon=True,
-                ).start()
-            else:
-                Label(row, width=4).grid(row=0, column=0, rowspan=2, padx=4)
+            prog = ttk.Progressbar(top_frame, orient="horizontal", length=480, mode="determinate")
+            prog.grid(row=0, column=1, padx=5)
 
-            Label(row, text=title, font=("Helvetica", 11, "bold")).grid(
-                row=0, column=1, sticky="w"
+            percent_lbl = Label(top_frame, text="0%", width=4)
+            percent_lbl.grid(row=0, column=2, padx=5)
+
+            attention_btn = Button(
+                top_frame,
+                text="⚠️",
+                width=2,
+                fg="red",
+                command=lambda p=path: self._confirm_attention(p),
             )
+            attention_btn.grid(row=0, column=3, padx=(0, 5))
 
-            prog = ttk.Progressbar(row, orient="horizontal", length=150, mode="determinate")
-            prog.grid(row=0, column=2, sticky="ew", padx=8)
+            close_btn = Button(
+                top_frame,
+                text="🗑️",
+                width=2,
+                fg="red",
+                command=lambda p=path: self._confirm_remove(p),
+            )
+            close_btn.grid(row=0, column=4, padx=(0, 5))
 
-            percent_lbl = Label(row, text="0%")
-            percent_lbl.grid(row=0, column=3, padx=4)
+            path_frame = Frame(row_frame, padx=150)
+            path_frame.grid(row=1, column=0, sticky="ew")
+            path_frame.columnconfigure(0, weight=1)
+
+            path_lbl = Label(
+                path_frame,
+                text=str(path.parent),
+                fg="blue",
+                cursor="hand2",
+                font=("Helvetica", 12, "underline"),
+                anchor="w"
+            )
+            path_lbl.grid(row=0, column=0, sticky="w")
+            path_lbl.bind("<Button-1>", lambda e, p=path.parent: _open_folder(p))
 
             saved = self.progress_state.get(path.name)
             if saved:
@@ -892,35 +904,10 @@ class WatcherUI(tk.Tk):
                 prog["value"] = 100
                 percent_lbl.config(text=f"{percent}%")
 
-            ctrl_btn = None
-
-            close_btn = Button(
-                row,
-                text="🗑️",
-                width=2,
-                fg="red",
-                command=lambda p=path: self._confirm_remove(p),
-            )
-            close_btn.grid(row=0, column=4, padx=2)
-
-            path_lbl = Label(
-                row,
-                text=str(path.parent),
-                fg="blue",
-                cursor="hand2",
-                font=("Helvetica", 9, "underline"),
-            )
-            path_lbl.grid(row=1, column=1, columnspan=4, sticky="w", pady=(2, 0))
-            path_lbl.bind(
-                "<Button-1>",
-                lambda e, p=path.parent: _open_folder(p),
-            )
-
             self._row_widgets[path] = {
                 "progress": prog,
                 "percent": percent_lbl,
-                **({"ctrl": ctrl_btn} if ctrl_btn else {}),
-                "frame": row,
+                "frame": row_frame,
             }
 
     # ------------------------------------------------------------
