@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, sys, re, json, argparse, difflib, pathlib, requests, shutil, threading, queue, time, webbrowser
+import os, sys, re, json, argparse, difflib, pathlib, requests, shutil, subprocess, threading, queue, time, webbrowser
 from tkinter import Canvas, Scrollbar, Frame, Label, PhotoImage
 from pathlib import Path
 from collections import OrderedDict
@@ -29,14 +29,42 @@ def _terminal_progress(current: int, total: int) -> None:
 
 def _open_folder(path: Path) -> None:
     try:
+        path = path.resolve()
         if sys.platform.startswith("win"):
             os.startfile(str(path))
         elif sys.platform.startswith("darwin"):
-            subprocess.run(["open", str(path)], check=False)
+            subprocess.run(["open", str(path)], check=True)
         else:
-            subprocess.run(["xdg-open", str(path)], check=False)
-    except Exception:
-        pass
+            methods = [
+                lambda: subprocess.run(["xdg-open", str(path)], check=True),
+                lambda: subprocess.run(
+                    ["dbus-send", "--print-reply", "--dest=org.freedesktop.FileManager1",
+                     "/org/freedesktop/FileManager1", "org.freedesktop.FileManager1.ShowFolders",
+                     f"array:string:file://{path}", "string:''"], 
+                    check=True
+                ),
+                lambda: subprocess.run(["gio", "open", str(path)], check=True),
+                lambda: subprocess.run(["mimeopen", "-d", str(path)], check=True),
+                lambda: subprocess.run(["caja", str(path)], check=True),
+                lambda: subprocess.run(["nautilus", str(path)], check=True),
+                lambda: subprocess.run(["dolphin", str(path)], check=True),
+                lambda: subprocess.run(["thunar", str(path)], check=True),
+                lambda: subprocess.run(["pcmanfm", str(path)], check=True),
+            ]
+            
+            for method in methods:
+                try:
+                    method()
+                    return
+                except (FileNotFoundError, subprocess.CalledProcessError):
+                    continue
+                except Exception as e:
+                    print(f"Tried method but got error: {e}")
+
+            print(f"❌ Could not open folder. Path: {path}")
+            print("   Tried all known methods. Please open manually.")
+    except Exception as e:
+        print(f"⚠️ Error opening folder: {e}")
 
 global_ui = None
 html_path = None
@@ -290,7 +318,7 @@ def download_images(
     filenames: list[str],
     dest_folder: Path,
     progress_cb: callable | None = None,
-) -> int:  # ← now returns the number of files downloaded
+) -> int:
     base_url = APP_URL_TEMPLATE.format(app_id=app_id)
     dest_folder.mkdir(parents=True, exist_ok=True)
 
@@ -817,6 +845,7 @@ class WatcherUI(tk.Tk):
         displayed = queued + active
         self.counter_label.config(text=f"Job Count: {displayed}")
         self.after(300, self._refresh_counter)
+
     # ------------------------------------------------------------------
     def start_job(self):
         self._busy = True
@@ -830,10 +859,66 @@ class WatcherUI(tk.Tk):
         self.progress["value"] = current
         self.update_idletasks()
 
+    # ------------------------------------------------------------------
+    def _make_scrolling_label(self, parent, full_text, max_pixels):
+        container = Frame(parent, width=max_pixels, height=20)
+        container.pack_propagate(False)
+        container.pack(side="left")  
+
+        lbl = tk.Label(container, font=("Helvetica", 11, "bold"),
+                       anchor="w")
+        lbl.full_text = full_text
+        lbl.max_pixels = max_pixels
+        lbl.current_offset = 0
+        lbl.is_running = False
+
+        test = tk.Label(container, font=("Helvetica", 11, "bold"))
+        test.pack_forget()
+        fit_len = 0
+        for i in range(1, len(full_text) + 1):
+            test.config(text=full_text[:i])
+            test.update_idletasks()
+            if test.winfo_reqwidth() > max_pixels:
+                break
+            fit_len = i
+        test.destroy()
+
+        lbl.config(text=full_text[:fit_len])
+        lbl.pack(fill="both", expand=True)
+
+        def _update_name_label():
+            txt = lbl.full_text[lbl.current_offset:] + " " + lbl.full_text[:lbl.current_offset]
+            lbl.config(text=txt)
+            lbl.current_offset = (lbl.current_offset + 1) % len(lbl.full_text)
+            if lbl.is_running:
+                lbl.after_id = lbl.after(150, _update_name_label)
+
+        def _start_name_label(event=None):
+            if not lbl.is_running:
+                lbl.is_running = True
+                _update_name_label()
+
+        def _stop_name_label(event=None):
+            lbl.is_running = False
+            if hasattr(lbl, "after_id"):
+                lbl.after_cancel(lbl.after_id)
+            lbl.config(text=lbl.full_text[:fit_len])
+
+        lbl.bind("<Enter>", _start_name_label)
+        lbl.bind("<Leave>", _stop_name_label)
+
+        return lbl
+
+    # ------------------------------------------------------------------
     def refresh_file_list(self, html_files: list[Path], status_map: dict[Path, str]):
         for widget in self.inner_frame.winfo_children():
             widget.destroy()
         self.update_idletasks()
+
+        inset_pad = 20
+        right_pad = 20
+        row_width = 760 - inset_pad - right_pad
+        title_max_px = 180
 
         for idx, path in enumerate(html_files):
             try:
@@ -842,60 +927,72 @@ class WatcherUI(tk.Tk):
             except Exception:
                 title = path.stem
 
-            row_frame = Frame(self.inner_frame, bd=3, relief="solid", padx=5, pady=5)
-            row_frame.grid(row=idx, column=0, sticky="ew", pady=7)
-            row_frame.columnconfigure(0, weight=1)
+            game_dir = None
+            temp_file = TEMP_FOLDER / f"{path.name}.txt"
+            if temp_file.is_file():
+                try:
+                    for line in temp_file.read_text().splitlines():
+                        if line.startswith("GAMEDIR="):
+                            game_dir = Path(line.split("=", 1)[1].strip())
+                            break
+                except Exception:
+                    pass
 
-            top_frame = Frame(row_frame)
-            top_frame.grid(row=0, column=0, sticky="ew")
+            game_folder_path = game_dir if game_dir else path.parent
+            game_folder_pn = str(game_folder_path)
 
-            top_frame.columnconfigure(0, weight=1)
-            top_frame.columnconfigure(1, weight=0)
-            top_frame.columnconfigure(2, weight=0)
-            top_frame.columnconfigure(3, weight=0)
-            top_frame.columnconfigure(4, weight=0)
+            outer = Frame(self.inner_frame, bd=2, relief="groove", width=row_width, height=80)
+            outer.grid(row=idx, column=0, pady=8, padx=(inset_pad, right_pad))
+            outer.grid_propagate(False)
 
-            name_label = Label(top_frame, text=title, font=("Helvetica", 11, "bold"), anchor="w")
-            name_label.grid(row=0, column=0, sticky="w", padx=(0, 10))
+            top = Frame(outer)
+            top.pack(fill="x", padx=8, pady=4)
 
-            prog = ttk.Progressbar(top_frame, orient="horizontal", length=480, mode="determinate")
-            prog.grid(row=0, column=1, padx=5)
+            name_label = self._make_scrolling_label(top, title, title_max_px)
+            name_label.pack(side="left")
 
-            percent_lbl = Label(top_frame, text="0%", width=4)
-            percent_lbl.grid(row=0, column=2, padx=5)
+            prog = ttk.Progressbar(top, orient="horizontal", length=380, mode="determinate")
+            prog.pack(side="left", padx=12)
+
+            percent_lbl = Label(top, text="0%", width=4)
+            percent_lbl.pack(side="left", padx=4)
 
             attention_btn = Button(
-                top_frame,
+                top,
                 text="⚠️",
                 width=2,
                 fg="red",
                 command=lambda p=path: self._confirm_attention(p),
             )
-            attention_btn.grid(row=0, column=3, padx=(0, 5))
+            attention_btn.pack(side="left", padx=4)
 
             close_btn = Button(
-                top_frame,
+                top,
                 text="🗑️",
                 width=2,
                 fg="red",
                 command=lambda p=path: self._confirm_remove(p),
             )
-            close_btn.grid(row=0, column=4, padx=(0, 5))
+            close_btn.pack(side="left", padx=4)
 
-            path_frame = Frame(row_frame, padx=150)
-            path_frame.grid(row=1, column=0, sticky="ew")
-            path_frame.columnconfigure(0, weight=1)
+            bottom = Frame(outer)
+            bottom.pack(fill="x", padx=8, pady=(0, 4))
 
             path_lbl = Label(
-                path_frame,
-                text=str(path.parent),
+                bottom,
+                text=game_folder_pn,
                 fg="blue",
                 cursor="hand2",
                 font=("Helvetica", 12, "underline"),
-                anchor="w"
             )
-            path_lbl.grid(row=0, column=0, sticky="w")
-            path_lbl.bind("<Button-1>", lambda e, p=path.parent: _open_folder(p))
+            path_lbl.pack(side="top", pady=2)
+            path_lbl.bind("<Button-1>", lambda e, p=game_folder_path: _open_folder(p))
+
+            self._row_widgets[path] = {
+                "progress": prog,
+                "percent": percent_lbl,
+                "frame": outer,
+            }
 
             saved = self.progress_state.get(path.name)
             if saved:
@@ -903,12 +1000,6 @@ class WatcherUI(tk.Tk):
                 prog["maximum"] = 100
                 prog["value"] = 100
                 percent_lbl.config(text=f"{percent}%")
-
-            self._row_widgets[path] = {
-                "progress": prog,
-                "percent": percent_lbl,
-                "frame": row_frame,
-            }
 
     # ------------------------------------------------------------
 
