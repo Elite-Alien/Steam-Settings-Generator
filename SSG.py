@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import os, sys, re, json, argparse, difflib, pathlib, requests, shutil, subprocess, threading, queue, time, webbrowser
-from tkinter import Canvas, Scrollbar, Frame, Label, PhotoImage
+from tkinter import Canvas, Scrollbar, Frame, Label
 from pathlib import Path
 from collections import OrderedDict
 from urllib.parse import urljoin
@@ -8,7 +8,8 @@ from bs4 import BeautifulSoup
 
 all_html_files: list[Path] = []
 file_status: dict[Path, str] = {}
-_prompt_handled: dict[Path, bool] = {}
+_prompt_handled = {}
+_prompt_handled_lock = threading.Lock()
 _download_done: dict[Path, bool] = {}
 
 def _terminal_progress(current: int, total: int) -> None:
@@ -65,6 +66,68 @@ def _open_folder(path: Path) -> None:
             print("   Tried all known methods. Please open manually.")
     except Exception as e:
         print(f"⚠️ Error opening folder: {e}")
+
+def check_existing_completions() -> dict:
+    print("⏳ Checking for existing completed games...")
+    progress_state = load_progress_state()
+    updated = False
+    
+    for folder in [HTML_FOLDER, OLD_HTML_FOLDER]:
+        for html_path in folder.glob("*.html"):
+            if html_path.name in progress_state and progress_state[html_path.name].get("percent") == 100:
+                continue
+            
+            try:
+                game_folder = None
+                temp_file = TEMP_FOLDER / f"{html_path.name}.txt"
+                if temp_file.exists():
+                    for line in temp_file.read_text().splitlines():
+                        if line.startswith("GAMEDIR="):
+                            game_folder = Path(line.split("=", 1)[1].strip())
+                            break
+            
+                if not game_folder:
+                    try:
+                        with html_path.open("r", encoding="utf-8") as f:
+                            soup = BeautifulSoup(f, "html.parser")
+                        game_name = clean_title(soup.find("h1", itemprop="name").text)
+                        game_folder = GAMES_ROOT / game_name
+                    except Exception:
+                        continue
+                        
+                if not game_folder.exists():
+                    continue
+                    
+                steam_settings = game_folder / "steam_settings"
+                achievement_images = steam_settings / "achievement_images"
+                if not steam_settings.exists() or not achievement_images.exists():
+                    continue
+                    
+                try:
+                    with html_path.open("r", encoding="utf-8") as f:
+                        soup = BeautifulSoup(f, "html.parser")
+                    required_images = set(collect_image_names(soup))
+                except Exception:
+                    continue
+                    
+                existing_images = set()
+                for p in achievement_images.iterdir():
+                    if p.is_file() and p.suffix.lower() == ".jpg":
+                        existing_images.add(p.name)
+                
+                if required_images.issubset(existing_images):
+                    progress_state[html_path.name] = {"percent": 100}
+                    updated = True
+                    print(f"✅ Found complete installation for {html_path.name}")
+                    
+            except Exception as e:
+                print(f"⚠️ Error checking {html_path}: {e}")
+    
+    if updated:
+        save_progress_state(progress_state)
+        print("💾 Updated progress state with existing completions")
+    
+    return progress_state
 
 global_ui = None
 html_path = None
@@ -171,7 +234,8 @@ HTML_FOLDER = pathlib.Path(__file__).resolve().parent / "HTML"
 HTML_FOLDER.mkdir(parents=True, exist_ok=True)
 GAMES_ROOT = pathlib.Path(__file__).resolve().parent / "Games"
 GAMES_ROOT.mkdir(parents=True, exist_ok=True)
-
+OLD_HTML_FOLDER = TEMP_FOLDER / "old_html"
+OLD_HTML_FOLDER.mkdir(parents=True, exist_ok=True)
 
 # ----------------------------------------------------------------------
 def _closest_folder(base_path: Path, html_name: str) -> Path | None:
@@ -222,6 +286,32 @@ def _copy_existing_images(
 
     return found
 
+
+def move_to_old(html_path: Path):
+    try:
+        original_location = html_path.parent == HTML_FOLDER
+        
+        dest_html = OLD_HTML_FOLDER / html_path.name
+        if html_path.exists():
+            shutil.move(str(html_path), str(dest_html))
+            print(f"🗂️ Moved HTML file to {dest_html}")
+        
+        folder_name = html_path.stem + "_files"
+        src_folder = html_path.parent / folder_name
+        if src_folder.exists():
+            dest_folder = OLD_HTML_FOLDER / folder_name
+            shutil.move(str(src_folder), str(dest_folder))
+            print(f"🗂️ Moved associated folder to {dest_folder}")
+
+        if original_location and html_path in all_html_files:
+            all_html_files.remove(html_path)
+            file_status.pop(html_path, None)
+            
+            if global_ui:
+                global_ui.refresh_file_list(all_html_files, file_status)
+
+    except Exception as e:
+        print(f"⚠️ Error moving files to old folder: {e}")
 
 def read_local_file(filepath: str) -> str:
     with open(filepath, "r", encoding="utf-8") as f:
@@ -407,11 +497,11 @@ def _get_progress_cb(app_id: str, html_path: Path) -> callable:
             widgets = global_ui._row_widgets.get(p)
             if not widgets:
                 return
-            prog = widgets["progress"]
-            perc = widgets["percent"]
-            prog["maximum"] = tot
-            prog["value"] = cur
-            perc.config(text=f"{int(cur / tot * 100)}%")
+            if widgets["progress"].winfo_exists():
+                widgets["progress"]["maximum"] = tot
+                widgets["progress"]["value"] = cur
+            if widgets["percent"].winfo_exists():
+                widgets["percent"].config(text=f"{int(cur / tot * 100)}%")
             global_ui.update_idletasks()
         return _ui_row_progress
 
@@ -497,6 +587,8 @@ def main():
     else:
         print("No Steam app‑id found – steam_appid.txt not created.")
 
+    progress_cb = None
+
     achievements = []
     achievement_divs = soup.find_all(
         "div", id=lambda x: x and x.startswith("achievement-")
@@ -565,24 +657,25 @@ def main():
         a["description"].startswith("Hidden achievement:") for a in achievements
     )
 
-    if not _prompt_handled.get(html_path, False):
-        if multiplayer_achievements and not already_done:
-            if _gui_yes_no("Multiplayer achievements found. Remove them?"):
-                achievements = [a for a in achievements if not a["is_multiplayer"]]
+    with _prompt_handled_lock:
+        if not _prompt_handled.get(html_path, False):
+            if multiplayer_achievements and not already_done:
+                if _gui_yes_no("Multiplayer achievements found. Remove them?"):
+                    achievements = [a for a in achievements if not a["is_multiplayer"]]
+                _prompt_handled[html_path] = True
 
-        if has_hidden_prefix:
-            if not already_done:
-                if _hidden_cleanup_needed(html_path.name, processed_html_names):
-                    if _gui_yes_no('Clean descriptions that start with "Hidden achievement:"?'):
+            if has_hidden_prefix:
+                if not already_done:
+                    if _hidden_cleanup_needed(html_path.name, processed_html_names):
+                        if _gui_yes_no('Clean descriptions that start with "Hidden achievement:"?'):
+                            for a in achievements:
+                                if a["description"].startswith("Hidden achievement:"):
+                                    a["description"] = a["description"][len("Hidden achievement:"):].lstrip()
+                    else:
                         for a in achievements:
                             if a["description"].startswith("Hidden achievement:"):
                                 a["description"] = a["description"][len("Hidden achievement:"):].lstrip()
-                else:
-                    for a in achievements:
-                        if a["description"].startswith("Hidden achievement:"):
-                            a["description"] = a["description"][len("Hidden achievement:"):].lstrip()
-
-        _prompt_handled[html_path] = True
+                _prompt_handled[html_path] = True
 
     for a in achievements:
         a.pop("is_multiplayer", None)
@@ -634,10 +727,19 @@ def main():
             print(f"Downloaded {len(missing_filenames)} missing image(s) to {achievement_images}")
             _download_done[html_path] = True
             missing_filenames = []
+            
+            if progress_cb:
+                progress_cb(1, 1)
     elif app_id:
-        print("All required images already present – no download needed.")
+        print("All required images already present - no download needed.")
+        progress_cb = _get_progress_cb(app_id, html_path) or _terminal_progress
+        if progress_cb:
+            progress_cb(1, 1)
     else:
-        print("No Steam app‑id found – image download skipped.")
+        print("No Steam app-id found - image download skipped.")
+        progress_cb = _get_progress_cb("", html_path) or _terminal_progress
+        if progress_cb:
+            progress_cb(1, 1)
 
 def _wrapped_download(app_id: str, filenames: list[str], dest: Path, cb: callable = _terminal_progress):
     html_path = globals().get("html_path")
@@ -702,20 +804,24 @@ def _wrapped_download(app_id: str, filenames: list[str], dest: Path, cb: callabl
     else:
         print("No DLC entries found – skipping DLC.txt and configs.app.ini creation.")
 
-    processed = load_processed_log(processed_folder)
-
-    processed.add(args.html_path.name)
-
-    if app_id:
-        processed.add(app_id)
-
-    progress_state[args.html_path.name] = {"percent": 100}
-    save_progress_state(progress_state)
-
-    save_processed_log(processed_folder, processed)
+    temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
+    state = load_progress_state(temp_dir)
+    state[html_path.name] = {"percent": 100}
+    save_progress_state(state, temp_dir)
+    
+    if progress_cb:
+        try:
+            progress_cb(1, 1)
+        except Exception as e:
+            print(f"Progress callback error: {e}")
 
 # ------------------------------------------------------------
 def _mark_complete_if_success(html_path: Path):
+    if not html_path.exists():
+        archived_path = OLD_HTML_FOLDER / html_path.name
+        if archived_path.exists():
+            html_path = archived_path
+
     try:
         soup = BeautifulSoup(html_path.read_text(encoding="utf-8"), "html.parser")
         base_folder = pathlib.Path(__file__).resolve().parent / clean_title(
@@ -766,7 +872,8 @@ def _mark_complete_if_success(html_path: Path):
 
     return True
 
-def _run_main_in_thread(html_path: Path):
+def _run_main_in_thread(html_file: Path):
+    global all_html_files, file_status
     old_argv = sys.argv[:]
     sys.argv = [sys.argv[0], str(html_path)]
     try:
@@ -781,13 +888,13 @@ def _run_main_in_thread(html_path: Path):
 
                 widgets = global_ui._row_widgets.get(html_path)
                 if widgets:
-                    prog = widgets["progress"]
-                    perc = widgets["percent"]
-                    prog["maximum"] = 100
-                    prog["value"] = 100
-                    perc.config(text="100%")
+                    if widgets["progress"].winfo_exists():
+                        widgets["progress"]["maximum"] = 100
+                        widgets["progress"]["value"] = 100
+                    if widgets["percent"].winfo_exists():
+                        widgets["percent"].config(text="100%")
                     ctrl_btn = widgets.get("ctrl")
-                    if ctrl_btn:
+                    if ctrl_btn and ctrl_btn.winfo_exists():
                         ctrl_btn.destroy()
                         widgets.pop("ctrl", None)
             else:
@@ -811,8 +918,7 @@ class WatcherUI(tk.Tk):
         self.file_queue = file_queue
         self._busy = False
 
-        self.counter_label = tk.Label(self, text="Job Count: 0",
-                                      font=("Helvetica", 12))
+        self.counter_label = tk.Label(self, text="Job Count: 0", font=("Helvetica", 12))
         self.counter_label.pack(pady=(10, 0))
 
         self.list_frame = Frame(self)
@@ -828,8 +934,6 @@ class WatcherUI(tk.Tk):
         self.inner_frame = Frame(self.canvas)
         self._row_widgets: dict[Path, dict[str, ttk.Progressbar | Label]] = {}
         self.canvas.create_window((0, 0), window=self.inner_frame, anchor="nw")
-
-        self._thumb_refs: dict[Path, PhotoImage] = {}
 
         self.after(300, self._refresh_counter)
 
@@ -911,95 +1015,123 @@ class WatcherUI(tk.Tk):
 
     # ------------------------------------------------------------------
     def refresh_file_list(self, html_files: list[Path], status_map: dict[Path, str]):
-        for widget in self.inner_frame.winfo_children():
-            widget.destroy()
-        self.update_idletasks()
+        if not self.winfo_exists() or self._stop_requested:
+            return
+    
+        files_copy = html_files.copy()
+        status_copy = status_map.copy()
+    
+        def _safe_refresh():
+            if not self.winfo_exists() or self._stop_requested:
+                return
 
-        inset_pad = 20
-        right_pad = 20
-        row_width = 760 - inset_pad - right_pad
-        title_max_px = 180
-
-        for idx, path in enumerate(html_files):
             try:
-                soup = BeautifulSoup(path.read_text(encoding="utf-8"), "html.parser")
-                title = soup.find("h1", itemprop="name").get_text(strip=True)
-            except Exception:
-                title = path.stem
+                for widget in self.inner_frame.winfo_children():
+                    try:
+                        widget.destroy()
+                    except tk.TclError:
+                        continue
+            
+                self._row_widgets.clear()
+            
+                inset_pad = 20
+                right_pad = 20
+                row_width = 760 - inset_pad - right_pad
+                title_max_px = 180
 
-            game_dir = None
-            temp_file = TEMP_FOLDER / f"{path.name}.txt"
-            if temp_file.is_file():
-                try:
-                    for line in temp_file.read_text().splitlines():
-                        if line.startswith("GAMEDIR="):
-                            game_dir = Path(line.split("=", 1)[1].strip())
-                            break
-                except Exception:
-                    pass
+                for idx, path in enumerate(files_copy):
+                    try:
 
-            game_folder_path = game_dir if game_dir else path.parent
-            game_folder_pn = str(game_folder_path)
+                        try:
+                            soup = BeautifulSoup(path.read_text(encoding="utf-8"), "html.parser")
+                            title = soup.find("h1", itemprop="name").get_text(strip=True)
+                        except Exception:
+                            title = path.stem
 
-            outer = Frame(self.inner_frame, bd=2, relief="groove", width=row_width, height=80)
-            outer.grid(row=idx, column=0, pady=8, padx=(inset_pad, right_pad))
-            outer.grid_propagate(False)
+                        game_dir = None
+                        temp_file = TEMP_FOLDER / f"{path.name}.txt"
+                        if temp_file.is_file():
+                            try:
+                                for line in temp_file.read_text().splitlines():
+                                    if line.startswith("GAMEDIR="):
+                                        game_dir = Path(line.split("=", 1)[1].strip())
+                                        break
+                            except Exception:
+                                pass
 
-            top = Frame(outer)
-            top.pack(fill="x", padx=8, pady=4)
+                        game_folder_path = game_dir if game_dir else path.parent
+                        game_folder_pn = str(game_folder_path)
 
-            name_label = self._make_scrolling_label(top, title, title_max_px)
-            name_label.pack(side="left")
+                        outer = Frame(self.inner_frame, bd=2, relief="groove", width=row_width, height=80)
+                        outer.grid(row=idx, column=0, pady=8, padx=(inset_pad, right_pad))
+                        outer.grid_propagate(False)
 
-            prog = ttk.Progressbar(top, orient="horizontal", length=380, mode="determinate")
-            prog.pack(side="left", padx=12)
+                        top = Frame(outer)
+                        top.pack(fill="x", padx=8, pady=4)
 
-            percent_lbl = Label(top, text="0%", width=4)
-            percent_lbl.pack(side="left", padx=4)
+                        name_label = self._make_scrolling_label(top, title, title_max_px)
+                        name_label.pack(side="left")
 
-            attention_btn = Button(
-                top,
-                text="⚠️",
-                width=2,
-                fg="red",
-                command=lambda p=path: self._confirm_attention(p),
-            )
-            attention_btn.pack(side="left", padx=4)
+                        prog = ttk.Progressbar(top, orient="horizontal", length=380, mode="determinate")
+                        prog.pack(side="left", padx=12)
 
-            close_btn = Button(
-                top,
-                text="🗑️",
-                width=2,
-                fg="red",
-                command=lambda p=path: self._confirm_remove(p),
-            )
-            close_btn.pack(side="left", padx=4)
+                        percent_lbl = Label(top, text="0%", width=4)
+                        percent_lbl.pack(side="left", padx=4)
 
-            bottom = Frame(outer)
-            bottom.pack(fill="x", padx=8, pady=(0, 4))
+                        attention_btn = Button(
+                            top,
+                            text="⚠️",
+                            width=2,
+                            fg="red",
+                            command=lambda p=path: self._confirm_attention(p),
+                        )
+                        attention_btn.pack(side="left", padx=4)
 
-            path_lbl = Label(
-                bottom,
-                text=game_folder_pn,
-                fg="blue",
-                cursor="hand2",
-                font=("Helvetica", 12, "underline"),
-            )
-            path_lbl.pack(side="top", pady=2)
-            path_lbl.bind("<Button-1>", lambda e, p=game_folder_path: _open_folder(p))
+                        close_btn = Button(
+                            top,
+                            text="🗑️",
+                            width=2,
+                            fg="red",
+                            command=lambda p=path: self._confirm_remove(p),
+                        )
+                        close_btn.pack(side="left", padx=4)
 
-            self._row_widgets[path] = {
-                "progress": prog,
-                "percent": percent_lbl,
-                "frame": outer,
-            }
+                        bottom = Frame(outer)
+                        bottom.pack(fill="x", padx=8, pady=(0, 4))
 
-            saved = self.progress_state.get(path.name)
-            if saved:
-                percent = saved.get("percent", 0)
-                prog["maximum"] = 100
-                prog["value"] = 100
-                percent_lbl.config(text=f"{percent}%")
+                        path_lbl = Label(
+                            bottom,
+                            text=game_folder_pn,
+                            fg="blue",
+                            cursor="hand2",
+                            font=("Helvetica", 12, "underline"),
+                        )
+                        path_lbl.pack(side="top", pady=2)
+                        path_lbl.bind("<Button-1>", lambda e, p=game_folder_path: _open_folder(p))
+
+                        self._row_widgets[path] = {
+                            "progress": prog,
+                            "percent": percent_lbl,
+                            "frame": outer,
+                        }
+
+                        saved = self.progress_state.get(path.name)
+                        if saved:
+                            percent = saved.get("percent", 0)
+                            prog["maximum"] = 100
+                            prog["value"] = min(percent, 100)
+                            percent_lbl.config(text=f"{percent}%")
+                
+                    except Exception as e:
+                        print(f"Error creating widget for {path}: {e}")
+
+                self.canvas.config(scrollregion=self.canvas.bbox("all"))
+                self.update_idletasks()
+            
+            except Exception as e:
+                print(f"Error rebuilding UI: {e}")
+
+        self.after(0, _safe_refresh)
 
     # ------------------------------------------------------------
 
@@ -1020,7 +1152,7 @@ class WatcherUI(tk.Tk):
                 temp_data[k.strip()] = v.strip()
 
         if "HTMLFOLDER" in temp_data:
-            html_folder_path = HTML_FOLDER / temp_data["HTMLFOLDER"]
+            html_folder_path = OLD_HTML_FOLDER / temp_data["HTMLFOLDER"]
             if html_folder_path.is_dir():
                 try:
                     shutil.rmtree(html_folder_path, ignore_errors=True)
@@ -1029,7 +1161,7 @@ class WatcherUI(tk.Tk):
                     print(f"⚠️  Could not delete HTML folder {html_folder_path}: {e}")
 
         if "HTMLFile" in temp_data:
-            html_file_path = HTML_FOLDER / temp_data["HTMLFile"]
+            html_file_path = OLD_HTML_FOLDER / temp_data["HTMLFile"]
             if html_file_path.is_file():
                 try:
                     html_file_path.unlink(missing_ok=True)
@@ -1141,7 +1273,7 @@ global_ui = None
 # ------------------------------------------------------------
 def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Event):
     global all_html_files, file_status
-    processed: set[str] = set()
+    processed: set[str] = {p.name for p in all_html_files}
 
     progress_state = load_progress_state()
     _progress_path = pathlib.Path(__file__).resolve().parent / ".temp" / "progress.json"
@@ -1166,24 +1298,13 @@ def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Ev
         if new_files:
             print(f"Detected new HTML files: {new_files}")
             for new_html in sorted(new_files):
-                try:
-                    prog_path = pathlib.Path(__file__).resolve().parent / ".temp" / "progress.json"
-                    if prog_path.is_file():
-                        prog_data = json.loads(prog_path.read_text(encoding="utf-8"))
-                        if new_html.name in prog_data:
-                            del prog_data[new_html.name]
-                            with prog_path.open("w", encoding="utf-8") as f:
-                                json.dump(prog_data, f, indent=2, ensure_ascii=False)
-                except Exception:
-                    pass
+                if new_html.name in processed:
+                    continue
 
-                if isinstance(progress_state, dict):
-                    progress_state.pop(new_html.name, None)
-
+                processed.add(new_html.name)
                 all_html_files.append(new_html)
                 file_status[new_html] = "waiting"
                 file_queue.put(new_html)
-                processed.add(new_html.name)
 
                 job_tracker.add_job()
 
@@ -1197,7 +1318,7 @@ def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Ev
                 threading.Thread(target=_process, args=(new_html,), daemon=True).start()
 
             if global_ui is not None:
-                global_ui.refresh_file_list(all_html_files, file_status)
+                global_ui.after(0, global_ui.refresh_file_list, all_html_files, file_status)
 
         try:
             msg = file_queue.get_nowait()
@@ -1280,23 +1401,24 @@ if __name__ == "__main__":
     else:
         HTML_FOLDER = pathlib.Path(__file__).resolve().parent / "HTML"
         HTML_FOLDER.mkdir(parents=True, exist_ok=True)
+        TEMP_FOLDER = pathlib.Path(__file__).resolve().parent / ".temp"
+        TEMP_FOLDER.mkdir(parents=True, exist_ok=True)
+        GAMES_ROOT = pathlib.Path(__file__).resolve().parent / "Games"
+        GAMES_ROOT.mkdir(parents=True, exist_ok=True)
 
-        for existing in HTML_FOLDER.iterdir():
-            if existing.suffix.lower() == ".html":
-                all_html_files.append(existing)
-                file_status[existing] = "waiting"
+        progress_state = check_existing_completions()
+
+        all_html_files = list(HTML_FOLDER.glob("*.html"))
+        for existing in all_html_files:
+            file_status[existing] = "waiting"
 
         file_queue = queue.Queue()
         stop_event = threading.Event()
 
-        script_dir = HTML_FOLDER
-        all_html_files: list[Path] = []
-        file_status: dict[Path, str] = {}
-        progress_state = load_progress_state()
-
         try:
             global_ui = WatcherUI(file_queue)
-            global_ui.progress_state = load_progress_state()
+            global_ui.progress_state = progress_state
+            global_ui.refresh_file_list(all_html_files, file_status)
         except Exception as e:
             print(f"Error during GUI initialization: {e}")
             sys.exit(1)
