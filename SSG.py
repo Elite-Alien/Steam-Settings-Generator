@@ -19,14 +19,6 @@ def _terminal_progress(current: int, total: int) -> None:
     bar = bar[:filled] + "●" + bar[filled + 1 :] if filled < 30 else bar
     sys.stdout.write(f"\r[{bar}] {percent:3d}%")
     sys.stdout.flush()
-    if current == total:
-        sys.stdout.write("\n")
-        temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
-        state = load_progress_state(temp_dir)
-        html_path = globals().get("html_path")
-        if html_path:
-            state[html_path.name] = {"percent": 100}
-            save_progress_state(state, temp_dir)
 
 def _open_folder(path: Path) -> None:
     try:
@@ -128,6 +120,21 @@ def check_existing_completions() -> dict:
         print("💾 Updated progress state with existing completions")
     
     return progress_state
+
+def update_progress(percent: int, html_path: Path) -> None:
+    """Update progress state and UI"""
+    temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
+    state = load_progress_state(temp_dir)
+    state[html_path.name] = {"percent": percent}
+    save_progress_state(state, temp_dir)
+    
+    if global_ui and hasattr(global_ui, '_row_widgets') and html_path in global_ui._row_widgets:
+        widgets = global_ui._row_widgets[html_path]
+        if widgets["progress"].winfo_exists():
+            widgets["progress"]["value"] = percent
+        if widgets["percent"].winfo_exists():
+            widgets["percent"].config(text=f"{percent}%")
+        global_ui.update_idletasks()
 
 global_ui = None
 html_path = None
@@ -289,24 +296,25 @@ def _copy_existing_images(
 
 def move_to_old(html_path: Path):
     try:
-        original_location = html_path.parent == HTML_FOLDER
-        
-        dest_html = OLD_HTML_FOLDER / html_path.name
-        if html_path.exists():
-            shutil.move(str(html_path), str(dest_html))
-            print(f"🗂️ Moved HTML file to {dest_html}")
-        
-        folder_name = html_path.stem + "_files"
-        src_folder = html_path.parent / folder_name
-        if src_folder.exists():
-            dest_folder = OLD_HTML_FOLDER / folder_name
-            shutil.move(str(src_folder), str(dest_folder))
-            print(f"🗂️ Moved associated folder to {dest_folder}")
-
-        if original_location and html_path in all_html_files:
-            all_html_files.remove(html_path)
-            file_status.pop(html_path, None)
+        if html_path.parent == HTML_FOLDER:
+            dest_html = OLD_HTML_FOLDER / html_path.name
+            if html_path.exists():
+                shutil.move(str(html_path), str(dest_html))
+                print(f"🗂️ Moved HTML file to {dest_html}")
             
+            folder_name = html_path.stem + "_files"
+            src_folder = html_path.parent / folder_name
+            if src_folder.exists():
+                dest_folder = OLD_HTML_FOLDER / folder_name
+                shutil.move(str(src_folder), str(dest_folder))
+                print(f"🗂️ Moved associated folder to {dest_folder}")
+
+            progress_state = load_progress_state()
+            progress_state[html_path.name] = {"percent": 100}
+            save_progress_state(progress_state)
+
+            file_status[html_path] = "done"
+
             if global_ui:
                 global_ui.refresh_file_list(all_html_files, file_status)
 
@@ -439,13 +447,6 @@ def download_images(
             except Exception:
                 pass
 
-        html_path = globals().get("html_path")
-        if isinstance(html_path, Path):
-            percent = int(i / total * 100)
-            state = load_progress_state(temp_dir)
-            state[html_path.name] = {"percent": percent}
-            save_progress_state(state, temp_dir)
-
     return downloaded_count
 
 def get_image_filename(tag) -> str:
@@ -480,7 +481,7 @@ def _ui_progress(cur: int, tot: int, html_path: Path, ui: WatcherUI, folder: Pat
     prog["maximum"] = tot
     prog["value"] = cur
     percent = int(cur / tot * 100)
-    perc.config(text=f"{percent}%")
+    percent_lbl.config(text=f"{percent}%")
     ui.update_idletasks()
     state = _load_progress_state_fresh()
     state[html_path.name] = {"percent": percent}
@@ -524,9 +525,18 @@ def main():
         sys.exit(1)
 
     html_path = args.html_path
+    update_progress(0, html_path)
+    if not html_path.is_file():
+        old_path = OLD_HTML_FOLDER / html_path.name
+        if old_path.is_file():
+            html_path = old_path
+        else:
+            print(f"File not found: {args.html_path}")
+            sys.exit(1)
+
     html_content = read_local_file(str(html_path))
     soup = BeautifulSoup(html_content, "html.parser")
-
+    
     script_dir = pathlib.Path(__file__).resolve().parent
     progress_state = load_progress_state()
     base_folder = GAMES_ROOT / clean_title(soup.find("h1", itemprop="name").text)
@@ -552,7 +562,9 @@ def main():
             for f in files:
                 src_file = pathlib.Path(root) / f
                 dst_file = dest_dir / f
-                shutil.copy2(src_file, dst_file) 
+                shutil.copy2(src_file, dst_file)
+
+    update_progress(20, html_path)
 
     app_id = extract_app_id(soup)
     if app_id:
@@ -587,6 +599,7 @@ def main():
     else:
         print("No Steam app‑id found – steam_appid.txt not created.")
 
+    update_progress(30, html_path)
     progress_cb = None
 
     achievements = []
@@ -620,6 +633,8 @@ def main():
             achievement.find(class_="achievement_image_small")
         )
 
+        update_progress(40, html_path)
+
         is_multiplayer = (
             achievement.find("div", class_="achievement_group")
             and achievement.find("div", class_="achievement_group").text.strip()
@@ -643,7 +658,7 @@ def main():
                 "is_multiplayer": is_multiplayer,
             }
         )
-
+        
     processed = load_processed_log(processed_folder)
     processed_html_names = {p for p in processed if not p.isdigit()}
 
@@ -659,9 +674,12 @@ def main():
 
     with _prompt_handled_lock:
         if not _prompt_handled.get(html_path, False):
+            current_progress = progress_state.get(html_path.name, {}).get("percent", 0)
+
             if multiplayer_achievements and not already_done:
                 if _gui_yes_no("Multiplayer achievements found. Remove them?"):
                     achievements = [a for a in achievements if not a["is_multiplayer"]]
+                    update_progress(max(current_progress, 50), html_path)
                 _prompt_handled[html_path] = True
 
             if has_hidden_prefix:
@@ -671,10 +689,12 @@ def main():
                             for a in achievements:
                                 if a["description"].startswith("Hidden achievement:"):
                                     a["description"] = a["description"][len("Hidden achievement:"):].lstrip()
+                        update_progress(max(current_progress, 50), html_path)
                     else:
                         for a in achievements:
                             if a["description"].startswith("Hidden achievement:"):
                                 a["description"] = a["description"][len("Hidden achievement:"):].lstrip()
+                        update_progress(max(current_progress, 50), html_path)
                 _prompt_handled[html_path] = True
 
     for a in achievements:
@@ -685,7 +705,7 @@ def main():
         json.dumps(achievements, indent=4, ensure_ascii=False), encoding="utf-8"
     )
     print(f"Achievements JSON written to {json_path}")
-
+     
     processed_folder = script_dir
     processed = load_processed_log(processed_folder)
 
@@ -700,6 +720,7 @@ def main():
         )
     else:
         already_have = set()
+        update_progress(70, html_path)
         print("No similar folder with images found; will download all needed files.")
 
     all_filenames = collect_image_names(soup)
@@ -716,6 +737,7 @@ def main():
     if app_id and missing_filenames:
         if _download_done.get(html_path):
             missing_filenames = []
+            update_progress(90, html_path)
         else:
             progress_cb = _get_progress_cb(app_id, html_path) or _terminal_progress
             downloaded_cnt = download_images(
@@ -725,6 +747,7 @@ def main():
                 progress_cb=progress_cb,
             )
             print(f"Downloaded {len(missing_filenames)} missing image(s) to {achievement_images}")
+            update_progress(90, html_path)
             _download_done[html_path] = True
             missing_filenames = []
             
@@ -732,11 +755,13 @@ def main():
                 progress_cb(1, 1)
     elif app_id:
         print("All required images already present - no download needed.")
+        update_progress(90, html_path)
         progress_cb = _get_progress_cb(app_id, html_path) or _terminal_progress
         if progress_cb:
             progress_cb(1, 1)
     else:
         print("No Steam app-id found - image download skipped.")
+        update_progress(90, html_path)
         progress_cb = _get_progress_cb("", html_path) or _terminal_progress
         if progress_cb:
             progress_cb(1, 1)
@@ -804,16 +829,19 @@ def _wrapped_download(app_id: str, filenames: list[str], dest: Path, cb: callabl
     else:
         print("No DLC entries found – skipping DLC.txt and configs.app.ini creation.")
 
+    update_progress(100, html_path)
+
+    if html_path.parent == HTML_FOLDER:
+        try:
+            move_to_old(html_path)
+            print(f"🗂️ Moved processed files for {html_path.name} to old_html folder")
+        except Exception as e:
+            print(f"⚠️ Error moving files to old folder: {e}")
+
     temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
     state = load_progress_state(temp_dir)
     state[html_path.name] = {"percent": 100}
     save_progress_state(state, temp_dir)
-    
-    if progress_cb:
-        try:
-            progress_cb(1, 1)
-        except Exception as e:
-            print(f"Progress callback error: {e}")
 
 # ------------------------------------------------------------
 def _mark_complete_if_success(html_path: Path):
@@ -880,28 +908,37 @@ def _run_main_in_thread(html_file: Path):
         job_tracker.start_job()
         main()
 
+        if html_path.parent == HTML_FOLDER:
+            try:
+                move_to_old(html_path)
+                print(f"🗂️ Moved processed files for {html_path.name} to old_html folder")
+            except Exception as e:
+                print(f"⚠️ Error moving files to old folder: {e}")
+
+        file_status[html_path] = "done"
+        
         if global_ui is not None:
-            if _mark_complete_if_success(html_path):
-                _load_progress_state_fresh()[html_path.name] = {"percent": 100}
-                temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
-                save_progress_state(progress_state, temp_dir)
-
-                widgets = global_ui._row_widgets.get(html_path)
-                if widgets:
-                    if widgets["progress"].winfo_exists():
-                        widgets["progress"]["maximum"] = 100
-                        widgets["progress"]["value"] = 100
-                    if widgets["percent"].winfo_exists():
-                        widgets["percent"].config(text="100%")
-                    ctrl_btn = widgets.get("ctrl")
-                    if ctrl_btn and ctrl_btn.winfo_exists():
-                        ctrl_btn.destroy()
-                        widgets.pop("ctrl", None)
-            else:
-                progress_state.pop(html_path.name, None)
-                save_progress_state(state=progress_state)
-
+            # Update GUI immediately after processing
+            widgets = global_ui._row_widgets.get(html_path)
+            if widgets:
+                if widgets["progress"].winfo_exists():
+                    widgets["progress"]["maximum"] = 100
+                    widgets["progress"]["value"] = 100
+                if widgets["percent"].winfo_exists():
+                    widgets["percent"].config(text="100%")
+                ctrl_btn = widgets.get("ctrl")
+                if ctrl_btn and ctrl_btn.winfo_exists():
+                    ctrl_btn.destroy()
+                    widgets.pop("ctrl", None)
+            
             global_ui.update_idletasks()
+            
+            # Also update progress state
+            temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
+            state = load_progress_state(temp_dir)
+            state[html_path.name] = {"percent": 100}
+            save_progress_state(state, temp_dir)
+
     finally:
         job_tracker.finish_job()
         sys.argv = old_argv
@@ -958,11 +995,6 @@ class WatcherUI(tk.Tk):
         self._busy = False
 
     # ------------------------------------------------------------------
-    def update_progress(self, current: int, total: int):
-        self.progress["maximum"] = total
-        self.progress["value"] = current
-        self.update_idletasks()
-
     # ------------------------------------------------------------------
     def _make_scrolling_label(self, parent, full_text, max_pixels):
         container = Frame(parent, width=max_pixels, height=20)
@@ -1039,6 +1071,8 @@ class WatcherUI(tk.Tk):
                 row_width = 760 - inset_pad - right_pad
                 title_max_px = 180
 
+                current_progress_state = load_progress_state()
+
                 for idx, path in enumerate(files_copy):
                     try:
 
@@ -1047,7 +1081,7 @@ class WatcherUI(tk.Tk):
                             title = soup.find("h1", itemprop="name").get_text(strip=True)
                         except Exception:
                             title = path.stem
-
+                            
                         game_dir = None
                         temp_file = TEMP_FOLDER / f"{path.name}.txt"
                         if temp_file.is_file():
@@ -1109,19 +1143,21 @@ class WatcherUI(tk.Tk):
                         path_lbl.pack(side="top", pady=2)
                         path_lbl.bind("<Button-1>", lambda e, p=game_folder_path: _open_folder(p))
 
-                        self._row_widgets[path] = {
-                            "progress": prog,
-                            "percent": percent_lbl,
-                            "frame": outer,
-                        }
+                        self.progress_state = load_progress_state()
 
                         saved = self.progress_state.get(path.name)
                         if saved:
                             percent = saved.get("percent", 0)
                             prog["maximum"] = 100
-                            prog["value"] = min(percent, 100)
+                            prog["value"] = percent
                             percent_lbl.config(text=f"{percent}%")
                 
+                        self._row_widgets[path] = {
+                            "progress": prog,
+                            "percent": percent_lbl,
+                            "frame": outer,
+                         }
+
                     except Exception as e:
                         print(f"Error creating widget for {path}: {e}")
 
@@ -1370,25 +1406,13 @@ def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Ev
                 if global_ui is not None:
                     global_ui.refresh_file_list(all_html_files, file_status)
 
-                if _mark_complete_if_success(html_path):
-                    _load_progress_state_fresh()[html_path.name] = {"percent": 100}
                     temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
-                    save_progress_state(progress_state, temp_dir)
-
-                    widgets = global_ui._row_widgets.get(html_path)
-                    if widgets:
-                        prog = widgets["progress"]
-                        perc = widgets["percent"]
-                        prog["maximum"] = 100
-                        prog["value"] = 100
-                        perc.config(text="100%")
-                        ctrl_btn = widgets.get("ctrl")
-                        if ctrl_btn:
-                            ctrl_btn.destroy()
-                            widgets.pop("ctrl", None)
-                else:
-                    progress_state.pop(html_path.name, None)
-                    save_progress_state(state=progress_state)
+                    state = load_progress_state(temp_dir)
+                    if _mark_complete_if_success(html_path):
+                        state[html_path.name] = {"percent": 100}
+                    else:
+                        state.pop(html_path.name, None)
+                    save_progress_state(state, temp_dir)
 
                 global_ui.update_idletasks()
                 job_tracker.finish_job()
@@ -1409,15 +1433,23 @@ if __name__ == "__main__":
         progress_state = check_existing_completions()
 
         all_html_files = list(HTML_FOLDER.glob("*.html"))
-        for existing in all_html_files:
-            file_status[existing] = "waiting"
+        
+        for html_name, state in progress_state.items():
+            if state.get("percent") == 100:
+                html_path = HTML_FOLDER / html_name
+                if html_path not in all_html_files:
+                    all_html_files.append(html_path)
+                    file_status[html_path] = "done"
+        
+        for path in all_html_files:
+            if path not in file_status:
+                file_status[path] = "waiting"
 
         file_queue = queue.Queue()
         stop_event = threading.Event()
 
         try:
             global_ui = WatcherUI(file_queue)
-            global_ui.progress_state = progress_state
             global_ui.refresh_file_list(all_html_files, file_status)
         except Exception as e:
             print(f"Error during GUI initialization: {e}")
