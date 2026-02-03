@@ -13,18 +13,26 @@ If you have any files like the "configs.overlay.ini", "sounds" (folder), "fonts"
 ## How to use as executable
 1. Make sure the application is executable. chmod +x or prompts in your GUI for your DE/WM/Compositor.
 2. Go to SteamDB and find your game.
-3. Save the page as an html file to the same folder SSG.py is in while running the application.
-4. Follow any of the prompts that might appear.
-5. Done.
+3. Start the program and have the GUI open.
+4. Save the page as an html file to the HTML folder inside the folder where SSG.py is located.
+5. Follow any of the prompts that might appear.
+6. Click the Directory Path link on the application or Navigate to the Games folder near SSG.py.
+7. Done.
 
-The GUI is very basic. It's nothing more than a simple Zenith/Zenity style window that runs while you save files. Though wih this method you can keep it running and marathon style many games in a matter of minutes. Once your done, close it and it will stop checking for HTML files.
+## Delete Existing Files with GUI
+1. Press the trashcan ison next to the finished game entry.
+2. Done.
+<img width="752" height="86" alt="image" src="https://github.com/user-attachments/assets/66cbdc9f-32ed-4e98-ae31-9d486179306c" />
+
+The GUI is very basic. It's nothing more than a simple window that runs while you save files. Though wih this method you can keep it running and marathon style many games in a matter of minutes. Once your done, close it and it will stop checking for HTML files. Currently the second button, the one left of the trashcan is a place holder. I planned to make it something in the future update, but not sure which to do yet. It may just end up being removed. Because it might not be worth it. So for now it does nothing.
 
 ## How to use in terminal
 1. Go to SteamDB and find your game.
 2. Save the page as an HTML file anywhere on your PC.
 4. Open a terminal write "python SSG.py /path-to-html/*.html".
 5. Let the script run and follow the prompts if any appear.
-6. Done
+6. Go to the "Games" folder beside SSG.py. The files will be in this folder.
+7. Done
 
 Warning
 -------
