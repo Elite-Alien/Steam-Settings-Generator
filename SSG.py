@@ -945,8 +945,109 @@ def _run_main_in_thread(html_file: Path):
 
 # ------------------------------------------------------------
 class WatcherUI(tk.Tk):
+    DARK_THEME = {
+        'bg': '#2d2d2d',
+        'fg': '#cdcdcd',
+        'widget_bg': '#404040',
+        'widget_fg': '#ffffff',
+        'hover_bg': '#505050',
+        'active_bg': '#606060',
+        'border': '#606060',
+        'button_bg': '#404040',
+        'progress': 'darkred'
+    }
+
+    LIGHT_THEME = {
+        'bg': '#ffffff',
+        'fg': '#000000',
+        'widget_bg': '#f0f0f0',
+        'widget_fg': '#000000',
+        'hover_bg': '#e0e0e0',
+        'active_bg': '#d0d0d0',
+        'border': '#c0c0c0',
+        'button_bg': '#f0f0f0',
+        'progress': 'lightgreen'
+    }
+
+    def toggle_theme(self):
+        self.dark_mode = not self.dark_mode
+        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        
+        self.configure(bg=theme['bg'])
+        self.counter_label.config(bg=theme['bg'], fg=theme['fg'])
+        self.list_frame.config(bg=theme['bg'])
+        self.canvas.config(bg=theme['bg'])
+        self.inner_frame.config(bg=theme['bg'])
+        self.scrollbar.config(
+            bg=theme['widget_bg'],
+            troughcolor=theme['bg']
+        )
+        
+        # Update theme button
+        self.theme_btn.config(
+            text='🌞' if self.dark_mode else '🌚',
+            bg=theme['button_bg'],
+            fg=theme['fg']
+        )
+        
+        # Update all existing widgets
+        for path, widgets in self._row_widgets.items():
+            if widgets['frame'].winfo_exists():
+                widgets['frame'].config(
+                    bg=theme['widget_bg'], 
+                    highlightbackground=theme['border']
+                )
+            if widgets['top_frame'].winfo_exists():
+                widgets['top_frame'].config(bg=theme['widget_bg'])
+            if widgets['bottom_frame'].winfo_exists():
+                widgets['bottom_frame'].config(bg=theme['widget_bg'])
+            if widgets['progress'].winfo_exists():
+                widgets['progress'].configure(style=f'{theme["progress"]}.Horizontal.TProgressbar')
+            if widgets['percent'].winfo_exists():
+                widgets['percent'].config(
+                    bg=theme['widget_bg'],
+                    fg=theme['fg']
+                )
+            if widgets['name_label'].winfo_exists():
+                widgets['name_label'].config(
+                    bg=theme['widget_bg'],
+                    fg=theme['fg']
+                )
+            if widgets['path_label'].winfo_exists():
+                widgets['path_label'].config(
+                    bg=theme['button_bg'],
+                    fg=theme['fg']
+                )
+            if widgets['attention_btn'].winfo_exists():
+                widgets['attention_btn'].config(
+                    bg=theme['button_bg'],
+                    fg=theme['fg']
+                )
+            if widgets['close_btn'].winfo_exists():
+                widgets['close_btn'].config(
+                    bg=theme['button_bg'],
+                    fg=theme['fg']
+                )
+
     def __init__(self, file_queue: queue.Queue):
         super().__init__()
+        self.dark_mode = False
+
+        self.style = ttk.Style()
+        self.style.theme_use('clam')
+
+        self.style.configure(
+            'darkred.Horizontal.TProgressbar',
+            background=self.DARK_THEME['progress'],
+            troughcolor=self.DARK_THEME['widget_bg']
+        )
+    
+        self.style.configure(
+            'lightgreen.Horizontal.TProgressbar',
+            background=self.LIGHT_THEME['progress'],
+            troughcolor=self.LIGHT_THEME['widget_bg']
+        )
+
         self.title("SSG: Watching for HTML files")
         self.geometry("800x800")
         self.resizable(False, False)
@@ -954,6 +1055,19 @@ class WatcherUI(tk.Tk):
         self.progress_state = progress_state
         self.file_queue = file_queue
         self._busy = False
+
+        self.theme_btn = Button(
+            self,
+            text='🌞',
+            font=('Arial', 8),
+            command=self.toggle_theme,
+            bd=0,
+            relief='flat',
+            bg=self.DARK_THEME['button_bg'],
+            fg=self.DARK_THEME['fg']
+        )
+
+        self.theme_btn.place(relx=0.95, rely=0.02, anchor='ne')
 
         self.counter_label = tk.Label(self, text="Job Count: 0", font=("Helvetica", 12))
         self.counter_label.pack(pady=(10, 0))
@@ -979,6 +1093,8 @@ class WatcherUI(tk.Tk):
 
         self.inner_frame.grid_columnconfigure(0, weight=1)
         self.inner_frame.grid_rowconfigure(len(all_html_files), minsize=5)
+
+        self.toggle_theme()
 
     # ------------------------------------------------------------------
     def _refresh_counter(self):
@@ -1093,30 +1209,33 @@ class WatcherUI(tk.Tk):
                             except Exception:
                                 pass
 
+                        current_theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
                         game_folder_path = game_dir if game_dir else path.parent
                         game_folder_pn = str(game_folder_path)
 
-                        outer = Frame(self.inner_frame, bd=2, relief="groove", width=row_width, height=80)
+                        outer = Frame(self.inner_frame, bd=2, relief="groove", width=row_width, height=80, bg=current_theme['widget_bg'], highlightbackground=current_theme['border'])
                         outer.grid(row=idx, column=0, pady=8, padx=(inset_pad, right_pad))
                         outer.grid_propagate(False)
 
-                        top = Frame(outer)
+                        top = Frame(outer, bg=current_theme['widget_bg'])
                         top.pack(fill="x", padx=8, pady=4)
 
                         name_label = self._make_scrolling_label(top, title, title_max_px)
+                        name_label.config(bg=current_theme['widget_bg'], fg=current_theme['fg'])
                         name_label.pack(side="left")
 
-                        prog = ttk.Progressbar(top, orient="horizontal", length=380, mode="determinate")
+                        prog = ttk.Progressbar(top, orient="horizontal", length=380, mode="determinate", style=f'{current_theme["progress"]}.Horizontal.TProgressbar')
                         prog.pack(side="left", padx=12)
 
-                        percent_lbl = Label(top, text="0%", width=4)
+                        percent_lbl = Label(top, text="0%", width=4, bg=current_theme['widget_bg'], fg=current_theme['fg'])
                         percent_lbl.pack(side="left", padx=4)
 
                         attention_btn = Button(
                             top,
                             text="⚠️",
                             width=2,
-                            fg="red",
+                            bg=current_theme['button_bg'],
+                            fg=current_theme['fg'],
                             command=lambda p=path: self._confirm_attention(p),
                         )
                         attention_btn.pack(side="left", padx=4)
@@ -1125,20 +1244,22 @@ class WatcherUI(tk.Tk):
                             top,
                             text="🗑️",
                             width=2,
-                            fg="red",
+                            bg=current_theme['button_bg'],
+                            fg=current_theme['fg'],
                             command=lambda p=path: self._confirm_remove(p),
                         )
                         close_btn.pack(side="left", padx=4)
 
-                        bottom = Frame(outer)
+                        bottom = Frame(outer, bg=current_theme['widget_bg'])
                         bottom.pack(fill="x", padx=8, pady=(0, 4))
 
                         path_lbl = Label(
                             bottom,
                             text=game_folder_pn,
-                            fg="blue",
+                            fg=current_theme['fg'],
                             cursor="hand2",
                             font=("Helvetica", 12, "underline"),
+                            bg=current_theme['button_bg']
                         )
                         path_lbl.pack(side="top", pady=2)
                         path_lbl.bind("<Button-1>", lambda e, p=game_folder_path: _open_folder(p))
@@ -1156,6 +1277,12 @@ class WatcherUI(tk.Tk):
                             "progress": prog,
                             "percent": percent_lbl,
                             "frame": outer,
+                            "top_frame": top,
+                            "bottom_frame": bottom,
+                            "path_label": path_lbl,
+                            "name_label": name_label,
+                            "attention_btn": attention_btn,
+                            "close_btn": close_btn,
                          }
 
                     except Exception as e:
