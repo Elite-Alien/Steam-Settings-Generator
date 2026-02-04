@@ -1074,6 +1074,13 @@ class WatcherUI(tk.Tk):
         self.scrollbar.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
 
+        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
+        self.bind("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind("<Button-4>", self._on_mousewheel)
+        self.canvas.bind("<Button-5>", self._on_mousewheel)
+        self.bind("<Button-4>", self._on_mousewheel)
+        self.bind("<Button-5>", self._on_mousewheel)
+
         self.inner_frame = Frame(self.canvas)
         self._row_widgets: dict[Path, dict[str, ttk.Progressbar | Label]] = {}
         self.canvas.create_window((0, 0), window=self.inner_frame, anchor="nw")
@@ -1154,6 +1161,15 @@ class WatcherUI(tk.Tk):
         lbl.bind("<Leave>", _stop_name_label)
 
         return lbl
+
+    # ------------------------------------------------------------------
+    def _on_mousewheel(self, event):
+        if event.delta:
+            scroll_amount = -1 * (event.delta // 120) if event.delta else 0
+        else:
+            scroll_amount = -1 if event.num == 4 else 1 if event.num == 5 else 0
+            
+        self.canvas.yview_scroll(scroll_amount, "units")
 
     def _update_scroll_region(self, event=None):
         bbox = self.canvas.bbox("all")
