@@ -10,6 +10,7 @@ all_html_files: list[Path] = []
 file_status: dict[Path, str] = {}
 _prompt_handled = {}
 _prompt_handled_lock = threading.Lock()
+dlc_lock = threading.Lock()
 _download_done: dict[Path, bool] = {}
 
 def _terminal_progress(current: int, total: int) -> None:
@@ -122,19 +123,31 @@ def check_existing_completions() -> dict:
     return progress_state
 
 def update_progress(percent: int, html_path: Path) -> None:
-    """Update progress state and UI"""
     temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
     state = load_progress_state(temp_dir)
     state[html_path.name] = {"percent": percent}
     save_progress_state(state, temp_dir)
     
-    if global_ui and hasattr(global_ui, '_row_widgets') and html_path in global_ui._row_widgets:
-        widgets = global_ui._row_widgets[html_path]
-        if widgets["progress"].winfo_exists():
-            widgets["progress"]["value"] = percent
-        if widgets["percent"].winfo_exists():
-            widgets["percent"].config(text=f"{percent}%")
-        global_ui.update_idletasks()
+    if global_ui and hasattr(global_ui, '_row_widgets'):
+        def _safe_update():
+            if not global_ui.winfo_exists() or html_path not in global_ui._row_widgets:
+                return
+                
+            widgets = global_ui._row_widgets[html_path]
+            if widgets["progress"].winfo_exists():
+                widgets["progress"]["value"] = percent
+            if widgets["percent"].winfo_exists():
+                widgets["percent"].config(text=f"{percent}%")
+                
+            if percent == 100:
+                ctrl_btn = widgets.get("ctrl")
+                if ctrl_btn and ctrl_btn.winfo_exists():
+                    ctrl_btn.destroy()
+                    widgets.pop("ctrl", None)
+            
+            global_ui.update_idletasks()
+        
+        global_ui.after(0, _safe_update)
 
 global_ui = None
 html_path = None
@@ -766,6 +779,48 @@ def main():
         if progress_cb:
             progress_cb(1, 1)
 
+    with dlc_lock:
+        try:
+            dlc_txt_path = steam_settings / "DLC.txt"
+            ini_path = steam_settings / "configs.app.ini"
+        
+            if dlc_txt_path.exists() and ini_path.exists():
+                return
+            
+            dlc_info = OrderedDict()
+            dlc_rows = soup.find_all('tr', attrs={'data-appid': True})
+            for row in dlc_rows:
+                appid = row.get('data-appid')
+                if appid and appid.isdigit():
+                    title_cell = row.find_all('td')[1] if len(row.find_all('td')) > 1 else None
+                    if title_cell:
+                        title = title_cell.get_text(strip=True)
+                        dlc_info[int(appid)] = title
+
+            dlc_info = dict(sorted(dlc_info.items()))
+        
+            if dlc_info:
+                dlc_txt_path = steam_settings / "DLC.txt"
+                with dlc_txt_path.open("w", encoding="utf-8") as f:
+                    for dlc_id, title in dlc_info.items():
+                        f.write(f"{dlc_id}={title}\n")
+            
+                ini_path = steam_settings / "configs.app.ini"
+                with ini_path.open("w", encoding="utf-8") as f:
+                    f.write("[app::dlcs]\n")
+                    f.write("unlock_all=1\n")
+                    for dlc_id, title in dlc_info.items():
+                        f.write(f"{dlc_id}={title}\n")
+                    
+                print(f"DLC.txt and configs.app.ini written in {steam_settings}")
+            else:
+                print("No DLC entries found, skipping DLC file creation.")
+            
+        except Exception as e:
+            print(f"⚠️ Error during DLC processing: {e}")
+
+    update_progress(95, html_path)
+ 
 def _wrapped_download(app_id: str, filenames: list[str], dest: Path, cb: callable = _terminal_progress):
     html_path = globals().get("html_path")
     if isinstance(html_path, Path) and _download_done.get(html_path):
@@ -789,45 +844,6 @@ def _wrapped_download(app_id: str, filenames: list[str], dest: Path, cb: callabl
             percent = int(i / len(filenames) * 100)
             state[html_path.name] = {"percent": percent}
             save_progress_state(state, temp_dir)
-
-    dlc_numbers = set()
-    for m in re.finditer(r'>\s*DLC\s+(\d+)\s*<', html_content, flags=re.IGNORECASE):
-        dlc_numbers.add(int(m.group(1)))
-    for m in re.finditer(r'\b\w*DLC\w*\b[^()]*\(\s*(\d+)\s*\)', html_content, flags=re.IGNORECASE):
-        dlc_numbers.add(int(m.group(1)))
-
-    row_pattern = re.compile(
-        r'<tr[^>]*\sdata-appid="(?P<id>\d+)"[^>]*>.*?'
-        r'<td>\s*<a[^>]*>\s*(?P=id)\s*</a>\s*</td>\s*'
-        r'<td>\s*(?P<title>[^<]+?)\s*</td>',
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-
-    dlc_info = OrderedDict()
-    for m in row_pattern.finditer(html_content):
-        dlc_id = int(m.group("id"))
-        title = m.group("title").strip()
-        if dlc_id in dlc_numbers:
-            dlc_info[dlc_id] = title
-
-    dlc_info = dict(sorted(dlc_info.items()))
-
-    if dlc_info:
-        dlc_txt_path = steam_settings / "DLC.txt"
-        with dlc_txt_path.open("w", encoding="utf-8") as f:
-            for dlc_id, title in dlc_info.items():
-                f.write(f"{dlc_id}={title}\n")
-
-        ini_path = steam_settings / "configs.app.ini"
-        with ini_path.open("w", encoding="utf-8") as f:
-            f.write("[app::dlcs]\n")
-            f.write("unlock_all=1\n")
-            for dlc_id, title in dlc_info.items():
-                f.write(f"{dlc_id}={title}\n")
-
-        print(f"DLC.txt and configs.app.ini written in {steam_settings}")
-    else:
-        print("No DLC entries found – skipping DLC.txt and configs.app.ini creation.")
 
     update_progress(100, html_path)
 
@@ -900,7 +916,7 @@ def _mark_complete_if_success(html_path: Path):
 
     return True
 
-def _run_main_in_thread(html_file: Path):
+def _run_main_in_thread(html_path: Path):
     global all_html_files, file_status
     old_argv = sys.argv[:]
     sys.argv = [sys.argv[0], str(html_path)]
@@ -911,33 +927,11 @@ def _run_main_in_thread(html_file: Path):
         if html_path.parent == HTML_FOLDER:
             try:
                 move_to_old(html_path)
-                print(f"🗂️ Moved processed files for {html_path.name} to old_html folder")
             except Exception as e:
-                print(f"⚠️ Error moving files to old folder: {e}")
+                print(f"Error moving files: {e}")
 
         file_status[html_path] = "done"
-        
-        if global_ui is not None:
-            # Update GUI immediately after processing
-            widgets = global_ui._row_widgets.get(html_path)
-            if widgets:
-                if widgets["progress"].winfo_exists():
-                    widgets["progress"]["maximum"] = 100
-                    widgets["progress"]["value"] = 100
-                if widgets["percent"].winfo_exists():
-                    widgets["percent"].config(text="100%")
-                ctrl_btn = widgets.get("ctrl")
-                if ctrl_btn and ctrl_btn.winfo_exists():
-                    ctrl_btn.destroy()
-                    widgets.pop("ctrl", None)
-            
-            global_ui.update_idletasks()
-            
-            # Also update progress state
-            temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
-            state = load_progress_state(temp_dir)
-            state[html_path.name] = {"percent": 100}
-            save_progress_state(state, temp_dir)
+        update_progress(100, html_path)
 
     finally:
         job_tracker.finish_job()
