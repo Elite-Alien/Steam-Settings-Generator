@@ -977,14 +977,12 @@ class WatcherUI(tk.Tk):
             troughcolor=theme['bg']
         )
         
-        # Update theme button
         self.theme_btn.config(
             text='🌞' if self.dark_mode else '🌚',
             bg=theme['button_bg'],
             fg=theme['fg']
         )
         
-        # Update all existing widgets
         for path, widgets in self._row_widgets.items():
             if widgets['frame'].winfo_exists():
                 widgets['frame'].config(
@@ -1088,6 +1086,8 @@ class WatcherUI(tk.Tk):
         self.inner_frame.grid_columnconfigure(0, weight=1)
         self.inner_frame.grid_rowconfigure(len(all_html_files), minsize=5)
 
+        self.inner_frame.bind("<Configure>", self._update_scroll_region)
+
         self.toggle_theme()
 
     # ------------------------------------------------------------------
@@ -1154,6 +1154,11 @@ class WatcherUI(tk.Tk):
         lbl.bind("<Leave>", _stop_name_label)
 
         return lbl
+
+    def _update_scroll_region(self, event=None):
+        bbox = self.canvas.bbox("all")
+        if bbox:
+            self.canvas.configure(scrollregion=(bbox[0], bbox[1], bbox[2], bbox[3] + 20))
 
     # ------------------------------------------------------------------
     def refresh_file_list(self, html_files: list[Path], status_map: dict[Path, str]):
@@ -1287,6 +1292,8 @@ class WatcherUI(tk.Tk):
             
             except Exception as e:
                 print(f"Error rebuilding UI: {e}")
+
+            self._update_scroll_region()
 
         self.after(0, _safe_refresh)
 
