@@ -1044,6 +1044,18 @@ class WatcherUI(tk.Tk):
         self.geometry("800x800")
         self.resizable(False, False)
 
+        self.mass_close_btn = Button(
+            self,
+            text="🗳",
+            font=('Arial', 8),
+            command=self._confirm_remove_all,
+            bd=0,
+            relief='flat',
+            bg=self.DARK_THEME['button_bg'],
+            fg=self.DARK_THEME['fg']
+        )
+        self.mass_close_btn.place(relx=0.01, rely=0.02, anchor='nw')
+
         self.progress_state = progress_state
         self.file_queue = file_queue
         self._busy = False
@@ -1084,6 +1096,8 @@ class WatcherUI(tk.Tk):
         self.inner_frame = Frame(self.canvas)
         self._row_widgets: dict[Path, dict[str, ttk.Progressbar | Label]] = {}
         self.canvas.create_window((0, 0), window=self.inner_frame, anchor="nw")
+
+        self._update_mass_close_btn()
 
         self.after(300, self._refresh_counter)
 
@@ -1175,6 +1189,14 @@ class WatcherUI(tk.Tk):
         bbox = self.canvas.bbox("all")
         if bbox:
             self.canvas.configure(scrollregion=(bbox[0], bbox[1], bbox[2], bbox[3] + 20))
+
+    # ------------------------------------------------------------------
+    def _update_mass_close_btn(self):
+        num_items = len(self._row_widgets)
+        if num_items < 2:
+            self.mass_close_btn.config(state=tk.DISABLED)
+        else:
+            self.mass_close_btn.config(state=tk.NORMAL)
 
     # ------------------------------------------------------------------
     def refresh_file_list(self, html_files: list[Path], status_map: dict[Path, str]):
@@ -1311,9 +1333,121 @@ class WatcherUI(tk.Tk):
 
             self._update_scroll_region()
 
+            self.after(100, self._update_mass_close_btn)
+
         self.after(0, _safe_refresh)
 
     # ------------------------------------------------------------
+    def _confirm_remove_all(self):
+        if not _gui_yes_no("⚠️ WARNING: This will delete ALL HTML files and game folders! Are you absolutely sure?"):
+            return
+    
+        files_to_delete = list(self._row_widgets.keys())
+    
+        for html_path in files_to_delete:
+            temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
+            temp_txt = temp_dir / f"{html_path.name}.txt"
+
+            temp_data: dict[str, str] = {}
+            if temp_txt.is_file():
+                for line in temp_txt.read_text(encoding="utf-8").splitlines():
+                    if "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    temp_data[k.strip()] = v.strip()
+
+            if "HTMLFOLDER" in temp_data:
+                html_folder_path = OLD_HTML_FOLDER / temp_data["HTMLFOLDER"]
+                if html_folder_path.is_dir():
+                    try:
+                        shutil.rmtree(html_folder_path, ignore_errors=True)
+                    except Exception:
+                        pass
+
+            if "HTMLFile" in temp_data:
+                html_file_path = OLD_HTML_FOLDER / temp_data["HTMLFile"]
+                if html_file_path.is_file():
+                    try:
+                        html_file_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+            if {"GAMEDIR", "appid"}.issubset(temp_data):
+                game_dir = pathlib.Path(temp_data["GAMEDIR"])
+                steam_settings = game_dir / "steam_settings"
+                appid_file = steam_settings / "steam_appid.txt"
+
+                hidden_path = game_dir / f".{temp_data['appid']}"
+                if hidden_path.is_file():
+                    try:
+                        shutil.rmtree(game_dir, ignore_errors=True)
+                    except Exception:
+                        pass
+                else:
+                    if not appid_file.is_file():
+                        try:
+                            shutil.rmtree(game_dir, ignore_errors=True)
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            stored_appid = appid_file.read_text(encoding="utf-8").strip()
+                        except Exception:
+                            stored_appid = ""
+
+                        if stored_appid == temp_data["appid"]:
+                            try:
+                                shutil.rmtree(game_dir, ignore_errors=True)
+                            except Exception:
+                                pass
+
+            try:
+                prog_path = pathlib.Path(__file__).resolve().parent / ".temp" / "progress.json"
+                if prog_path.is_file():
+                    prog_data = json.loads(prog_path.read_text(encoding="utf-8"))
+                    if html_path.name in prog_data:
+                        del prog_data[html_path.name]
+                        with prog_path.open("w", encoding="utf-8") as f:
+                            json.dump(prog_data, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
+            try:
+                html_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+            try:
+                for candidate in HTML_FOLDER.iterdir():
+                    if candidate.is_dir() and candidate.name.startswith(html_path.stem):
+                        shutil.rmtree(candidate, ignore_errors=True)
+            except Exception:
+                pass
+
+            if html_path in self._row_widgets:
+                try:
+                    self._row_widgets[html_path]["frame"].destroy()
+                except Exception:
+                    pass
+                self._row_widgets.pop(html_path, None)
+
+            if html_path in all_html_files:
+                all_html_files.remove(html_path)
+            if html_path in file_status:
+                file_status.pop(html_path, None)
+
+            try:
+                if temp_txt.is_file():
+                    temp_txt.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        all_html_files.clear()
+        file_status.clear()
+        self._row_widgets.clear()
+    
+        self.refresh_file_list(all_html_files, file_status)
+        self.after(100, self._update_mass_close_btn)
 
     # ------------------------------------------------------------
     def _confirm_remove(self, html_path: Path) -> None:
@@ -1431,6 +1565,7 @@ class WatcherUI(tk.Tk):
         file_status.pop(html_path, None)
 
         self.refresh_file_list(all_html_files, file_status)
+        self.after(100, self._update_mass_close_btn)
 
         try:
             if temp_txt.is_file():
