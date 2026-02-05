@@ -966,6 +966,11 @@ class WatcherUI(tk.Tk):
     def toggle_theme(self):
         self.dark_mode = not self.dark_mode
         theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+
+        self.mass_close_btn.config(
+            bg=theme['button_bg'],
+            fg=theme['fg']
+        )
         
         self.configure(bg=theme['bg'])
         self.counter_label.config(bg=theme['bg'], fg=theme['fg'])
@@ -1051,8 +1056,8 @@ class WatcherUI(tk.Tk):
             command=self._confirm_remove_all,
             bd=0,
             relief='flat',
-            bg=self.DARK_THEME['button_bg'],
-            fg=self.DARK_THEME['fg']
+            bg=self.LIGHT_THEME['button_bg'],
+            fg=self.LIGHT_THEME['fg']
         )
         self.mass_close_btn.place(relx=0.01, rely=0.02, anchor='nw')
 
