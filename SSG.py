@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os, sys, re, json, argparse, difflib, pathlib, requests, shutil, subprocess, threading, queue, time, webbrowser
+from collections import defaultdict
 from tkinter import Canvas, Scrollbar, Frame, Label
 from pathlib import Path
 from collections import OrderedDict
@@ -10,6 +11,7 @@ all_html_files: list[Path] = []
 file_status: dict[Path, str] = {}
 _prompt_handled = {}
 _prompt_handled_lock = threading.Lock()
+game_content_lock = defaultdict(threading.Lock)
 dlc_lock = threading.Lock()
 _download_done: dict[Path, bool] = {}
 
@@ -778,6 +780,23 @@ def main():
         progress_cb = _get_progress_cb("", html_path) or _terminal_progress
         if progress_cb:
             progress_cb(1, 1)
+
+    game_dir = GAMES_ROOT / clean_title(soup.find("h1", itemprop="name").text)
+
+    with game_content_lock[str(game_dir.resolve())]:
+        steam_settings = game_dir / "steam_settings"
+        steam_settings.mkdir(parents=True, exist_ok=True)
+        
+        json_path = steam_settings / "achievements.json"
+        temp_path = json_path.with_suffix(".tmp")
+        
+        try:
+            with temp_path.open("w", encoding="utf-8") as f:
+                json.dump(achievements, f, indent=4, ensure_ascii=False)
+            os.replace(str(temp_path), str(json_path))
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
 
     with dlc_lock:
         try:
