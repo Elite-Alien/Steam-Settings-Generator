@@ -243,7 +243,7 @@ def _run_main_with_progress():
 
 # ----------------------------------------------------------------------
 HTML_PATTERN = re.compile(
-    r'<link\s+rel=["\']canonical["\']\s+href=["\']https?://steamdb\.info/app/(\d+)/stats/["\']',
+    r'<link\s+rel=["\']canonical["\']\s+href=["\']https?://steamdb\.info/app/(\d+)/.*?["\']',
     re.IGNORECASE,
 )
 IMG_PATTERN = re.compile(r'([a-f0-9]{40})\.jpg', re.IGNORECASE)
@@ -401,14 +401,20 @@ def save_progress_state(state: dict, folder: Path | None = None) -> None:
 def extract_app_id(soup: BeautifulSoup) -> str | None:
     link_tag = soup.find("link", rel="canonical")
     if link_tag and link_tag.get("href"):
-        m = re.search(r"/app/(\d+)/stats/?", link_tag["href"], re.IGNORECASE)
+        m = re.search(r"/app/(\d+)", link_tag["href"], re.IGNORECASE)
         if m:
             return m.group(1)
-
+    
     m = HTML_PATTERN.search(str(soup))
     if m:
         return m.group(1)
-
+    
+    meta_tag = soup.find("meta", property="og:url")
+    if meta_tag and meta_tag.get("content"):
+        m = re.search(r"/app/(\d+)", meta_tag["content"], re.IGNORECASE)
+        if m:
+            return m.group(1)
+    
     return None
 
 
@@ -552,6 +558,49 @@ def main():
     html_content = read_local_file(str(html_path))
     soup = BeautifulSoup(html_content, "html.parser")
     
+    TEMP_FOLDER = pathlib.Path(__file__).resolve().parent / ".temp"
+    TEMP_FOLDER.mkdir(parents=True, exist_ok=True)
+
+    app_id = extract_app_id(soup)
+    if app_id:
+        temp_files = (pathlib.Path(__file__).resolve().parent / ".temp").glob("*.txt")
+        for temp_file in temp_files:
+            try:
+                for line in temp_file.read_text().splitlines():
+                    if line.startswith("appid="):
+                        existing_appid = line.split("=", 1)[1].strip()
+                        if existing_appid == app_id and temp_file.stem != html_path.stem:
+                            print(f"⚠️ App ID {app_id} already processed with a different HTML file. Deleting duplicate.")
+                            try:
+                                html_path.unlink(missing_ok=True)
+                                folder_name = html_path.stem + "_files"
+                                folder_path = html_path.parent / folder_name
+                                if folder_path.exists():
+                                    shutil.rmtree(folder_path, ignore_errors=True)
+                                print(f"🗑️ Deleted duplicate HTML file and folder for app ID {app_id}")
+
+                                if html_path in all_html_files:
+                                    all_html_files.remove(html_path)
+                                if html_path in file_status:
+                                    file_status.pop(html_path, None)
+                            
+                                if global_ui:
+                                    global_ui.after(0, global_ui.refresh_file_list, all_html_files, file_status)
+                            
+                                progress_state = load_progress_state()
+                                if html_path.name in progress_state:
+                                    del progress_state[html_path.name]
+                                    save_progress_state(progress_state)                        
+                                return
+                            except Exception as e:
+                                print(f"⚠️ Error deleting duplicate files: {e}")
+                            return
+            except Exception:
+                continue
+    else:
+        print("No Steam app‑id found – steam_appid.txt not created.")
+        return
+
     script_dir = pathlib.Path(__file__).resolve().parent
     progress_state = load_progress_state()
     base_folder = GAMES_ROOT / clean_title(soup.find("h1", itemprop="name").text)
@@ -1271,7 +1320,7 @@ class WatcherUI(tk.Tk):
                                 pass
 
                         current_theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
-                        game_folder_path = game_dir if game_dir else path.parent
+                        game_folder_path = game_dir if game_dir else GAMES_ROOT / clean_title(title)
                         game_folder_pn = str(game_folder_path)
 
                         outer = Frame(self.inner_frame, bd=2, relief="groove", width=row_width, height=80, bg=current_theme['widget_bg'], highlightbackground=current_theme['border'])
