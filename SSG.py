@@ -258,6 +258,8 @@ GAMES_ROOT = pathlib.Path(__file__).resolve().parent / "Games"
 GAMES_ROOT.mkdir(parents=True, exist_ok=True)
 OLD_HTML_FOLDER = TEMP_FOLDER / "old_html"
 OLD_HTML_FOLDER.mkdir(parents=True, exist_ok=True)
+TOOLS_FOLDER = pathlib.Path(__file__).resolve().parent / ".tools"
+TOOLS_FOLDER.mkdir(parents=True, exist_ok=True)
 
 # ----------------------------------------------------------------------
 def _closest_folder(base_path: Path, html_name: str) -> Path | None:
@@ -417,6 +419,8 @@ def extract_app_id(soup: BeautifulSoup) -> str | None:
     
     return None
 
+def fix_empty_icon(filename: str) -> str:
+    return "hidden.jpg" if filename == ".jpg" else filename
 
 def collect_image_names(soup: BeautifulSoup) -> list[str]:
     names = set()
@@ -700,6 +704,9 @@ def main():
             achievement.find(class_="achievement_image_small")
         )
 
+        icon = fix_empty_icon(icon)
+        icon_small = fix_empty_icon(icon_small)
+
         update_progress(40, html_path)
 
         is_multiplayer = (
@@ -725,7 +732,17 @@ def main():
                 "is_multiplayer": is_multiplayer,
             }
         )
-        
+
+    hidden_icon_src = TOOLS_FOLDER / "icons" / "hidden.jpg"
+    hidden_icon_dest = achievement_images / "hidden.jpg"
+
+    if not hidden_icon_src.exists():
+        print(f"❌ Critical: Missing required icon at {hidden_icon_src}")
+        sys.exit(1)
+
+    if any(any(ach[k] == "hidden.jpg" for k in ["icon", "icongray", "icon_gray"]) for ach in achievements):
+        shutil.copy2(hidden_icon_src, hidden_icon_dest)
+
     processed = load_processed_log(processed_folder)
     processed_html_names = {p for p in processed if not p.isdigit()}
 
