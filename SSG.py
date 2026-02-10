@@ -565,11 +565,14 @@ def main():
     if app_id:
         temp_files = (pathlib.Path(__file__).resolve().parent / ".temp").glob("*.txt")
         for temp_file in temp_files:
+            if temp_file.stem == html_path.stem:
+                continue
+                
             try:
                 for line in temp_file.read_text().splitlines():
                     if line.startswith("appid="):
                         existing_appid = line.split("=", 1)[1].strip()
-                        if existing_appid == app_id and temp_file.stem != html_path.stem:
+                        if existing_appid == app_id:
                             print(f"⚠️ App ID {app_id} already processed with a different HTML file. Deleting duplicate.")
                             try:
                                 html_path.unlink(missing_ok=True)
@@ -774,7 +777,7 @@ def main():
     processed = load_processed_log(processed_folder)
 
     html_folder = html_path.parent
-    closest = _closest_folder(html_folder, html_path.name)
+    closest = _closest_folder(html_folder, html_path.stem)
 
     if closest:
         already_have = _copy_existing_images(
@@ -1127,7 +1130,7 @@ class WatcherUI(tk.Tk):
             bg=self.LIGHT_THEME['button_bg'],
             fg=self.LIGHT_THEME['fg']
         )
-        self.mass_close_btn.place(relx=0.01, rely=0.02, anchor='nw')
+        self.mass_close_btn.place(x=20, y=10)
 
         self.progress_state = progress_state
         self.file_queue = file_queue
@@ -1143,8 +1146,7 @@ class WatcherUI(tk.Tk):
             bg=self.DARK_THEME['button_bg'],
             fg=self.DARK_THEME['fg']
         )
-
-        self.theme_btn.place(relx=0.95, rely=0.02, anchor='ne')
+        self.theme_btn.place(x=735, y=10)
 
         self.counter_label = tk.Label(self, text="Job Count: 0", font=("Helvetica", 12))
         self.counter_label.pack(pady=(10, 0))
@@ -1661,7 +1663,7 @@ global_ui = None
 # ------------------------------------------------------------
 def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Event):
     global all_html_files, file_status
-    processed: set[str] = {p.name for p in all_html_files}
+    processed: set[Path] = set(all_html_files)
 
     progress_state = load_progress_state()
     _progress_path = pathlib.Path(__file__).resolve().parent / ".temp" / "progress.json"
@@ -1681,19 +1683,14 @@ def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Ev
     while not stop_flag.is_set():
         _progress_reload_json()
         current_html = {p for p in folder.iterdir() if p.suffix.lower() == ".html"}
-        new_files = {p for p in current_html if p.name not in processed}
+        new_files = current_html - processed
 
         if new_files:
             print(f"Detected new HTML files: {new_files}")
             for new_html in sorted(new_files):
-                if new_html.name in processed:
-                    continue
-
-                processed.add(new_html.name)
+                processed.add(new_html)
                 all_html_files.append(new_html)
                 file_status[new_html] = "waiting"
-                file_queue.put(new_html)
-
                 job_tracker.add_job()
 
                 def _process(p):
@@ -1707,67 +1704,6 @@ def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Ev
 
             if global_ui is not None:
                 global_ui.after(0, global_ui.refresh_file_list, all_html_files, file_status)
-
-        try:
-            msg = file_queue.get_nowait()
-        except queue.Empty:
-            msg = None
-
-        if isinstance(msg, tuple) and msg[0] == "__NEW__":
-            new_path = msg[1]
-            if new_path not in all_html_files:
-                all_html_files.append(new_path)
-            file_status[new_path] = "waiting"
-            if global_ui is not None:
-                global_ui.refresh_file_list(all_html_files, file_status)
-            continue
-
-        if isinstance(msg, Path):
-            html_path = msg
-            if html_path not in all_html_files:
-                all_html_files.append(html_path)
-            file_status[html_path] = "waiting"
-            if global_ui is not None:
-                global_ui.refresh_file_list(all_html_files, file_status)
-
-            sys.argv = [sys.argv[0], str(html_path)]
-
-            try:
-                if global_ui is not None:
-                    global_ui.start_job()
-                file_status[html_path] = "processing"
-                if global_ui is not None:
-                    global_ui.refresh_file_list(all_html_files, file_status)
-
-                globals()["html_path"] = html_path
-
-                threading.Thread(
-                    target=_run_main_in_thread,
-                    args=(html_path,),
-                    daemon=True,
-                ).start()
-            except SystemExit:
-                pass
-            except Exception as exc:
-                print(f"Error processing {html_path}: {exc}")
-            finally:
-                if global_ui is not None:
-                    global_ui.finish_job()
-
-                file_status[html_path] = "done"
-                if global_ui is not None:
-                    global_ui.refresh_file_list(all_html_files, file_status)
-
-                    temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
-                    state = load_progress_state(temp_dir)
-                    if _mark_complete_if_success(html_path):
-                        state[html_path.name] = {"percent": 100}
-                    else:
-                        state.pop(html_path.name, None)
-                    save_progress_state(state, temp_dir)
-
-                global_ui.update_idletasks()
-                job_tracker.finish_job()
 
         time.sleep(1)
 
