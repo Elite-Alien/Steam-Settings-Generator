@@ -12,6 +12,7 @@ If you have any files like the "configs.overlay.ini", "sounds" (folder), "fonts"
 
 ### Settings Menu
 This is currently only in the application and not terminal based yet. Though if you want this to create you a "configs.user.ini" for your games. Click "Enable User Config" inside of the settings menu. Enter in all your desired information and it will create the "configs.user.ini" for you with the information you entered. Now each and every game will have this file placed inside the "steam_settings" folder.
+
 <img width="797" height="483" alt="image" src="https://github.com/user-attachments/assets/21b85cb4-a08a-4256-8599-67cefcc98ae3" />
 
 ## How to use as executable
