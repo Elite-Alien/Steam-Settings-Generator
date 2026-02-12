@@ -1060,6 +1060,13 @@ class WatcherUI(tk.Tk):
             fg=theme['fg']
         )
         
+        self.settings_btn.config(
+            bg=theme['button_bg'],
+            fg=theme['fg']
+        )
+
+        self.settings_frame.config(bg=theme['bg'])
+
         self.configure(bg=theme['bg'])
         self.counter_label.config(bg=theme['bg'], fg=theme['fg'])
         self.list_frame.config(bg=theme['bg'])
@@ -1114,6 +1121,41 @@ class WatcherUI(tk.Tk):
                     fg=theme['fg']
                 )
 
+    def toggle_settings_menu(self):
+        if self.settings_frame.winfo_ismapped():
+            self.settings_btn.lift()
+            self.settings_frame.pack_forget()
+            self.settings_btn.config(text="⚙️")
+        else:
+            self.settings_frame.pack(fill="both", expand=True)
+            self.settings_btn.config(text="❌")
+            self.populate_settings()
+
+    def populate_settings(self):
+        for widget in self.settings_frame.winfo_children():
+            widget.destroy()
+        
+        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        
+        title = Label(
+            self.settings_frame, 
+            text="Settings Menu",
+            font=("Helvetica", 16, "bold"),
+            bg=theme['bg'],
+            fg=theme['fg']
+        )
+        title.pack(pady=10)
+        
+        placeholder = Label(
+            self.settings_frame,
+            text="Settings options will appear here",
+            font=("Helvetica", 12),
+            bg=theme['bg'],
+            fg=theme['fg']
+        )
+        placeholder.pack(pady=10)
+        self.settings_btn.lift()
+
     def __init__(self, file_queue: queue.Queue):
         super().__init__()
         self.dark_mode = False
@@ -1163,7 +1205,22 @@ class WatcherUI(tk.Tk):
             bg=self.DARK_THEME['button_bg'],
             fg=self.DARK_THEME['fg']
         )
-        self.theme_btn.place(x=735, y=10)
+        self.theme_btn.place(x=690, y=10)
+
+        self.settings_btn = Button(
+            self,
+            text="⚙️",
+            font=('Arial', 8),
+            command=self.toggle_settings_menu,
+            bd=0,
+            relief='flat',
+            bg=self.LIGHT_THEME['button_bg'],
+            fg=self.LIGHT_THEME['fg']
+        )
+        self.settings_btn.place(x=735, y=10)
+
+        self.settings_frame = Frame(self)
+        self.settings_frame.pack_propagate(False)
 
         self.counter_label = tk.Label(self, text="Job Count: 0", font=("Helvetica", 12))
         self.counter_label.pack(pady=(10, 0))
