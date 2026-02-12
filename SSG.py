@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import os, sys, re, json, argparse, difflib, pathlib, requests, shutil, subprocess, threading, queue, time, webbrowser
 from collections import defaultdict
-from tkinter import Canvas, Scrollbar, Frame, Label
+from tkinter import Canvas, Scrollbar, Frame, Label, ttk, Checkbutton, Entry
 from pathlib import Path
 from collections import OrderedDict
 from urllib.parse import urljoin
@@ -156,7 +156,7 @@ html_path = None
 
 try:
     import tkinter as tk
-    from tkinter import messagebox, ttk, Button
+    from tkinter import messagebox, ttk, Button, Checkbutton, Entry
 except Exception:
     tk = None
 
@@ -251,6 +251,8 @@ IMG_PATTERN = re.compile(r'([a-f0-9]{40})\.jpg', re.IGNORECASE)
 APP_URL_TEMPLATE = "https://shared.fastly.steamstatic.com/community_assets/images/apps/{app_id}/"
 TEMP_FOLDER = pathlib.Path(__file__).resolve().parent / ".temp"
 TEMP_FOLDER.mkdir(parents=True, exist_ok=True)
+EXTRA_FOLDER = pathlib.Path(__file__).resolve().parent / "Extra"
+EXTRA_FOLDER.mkdir(parents=True, exist_ok=True)
 PROGRESS_STATE_FILE = TEMP_FOLDER / "progress.json"
 HTML_FOLDER = pathlib.Path(__file__).resolve().parent / "HTML"
 HTML_FOLDER.mkdir(parents=True, exist_ok=True)
@@ -260,6 +262,7 @@ OLD_HTML_FOLDER = TEMP_FOLDER / "old_html"
 OLD_HTML_FOLDER.mkdir(parents=True, exist_ok=True)
 TOOLS_FOLDER = pathlib.Path(__file__).resolve().parent / ".tools"
 TOOLS_FOLDER.mkdir(parents=True, exist_ok=True)
+USER_CONFIG_FILE = TOOLS_FOLDER / "userconfig.json"
 
 # ----------------------------------------------------------------------
 def _closest_folder(base_path: Path, html_name: str) -> Path | None:
@@ -623,10 +626,9 @@ def main():
     steam_settings.mkdir(parents=True, exist_ok=True)
     achievement_images.mkdir(parents=True, exist_ok=True)
 
-    extra_folder = script_dir / ".extra"
-    if extra_folder.is_dir():
-        for root, dirs, files in os.walk(extra_folder):
-            rel_path = pathlib.Path(root).relative_to(extra_folder)
+    if EXTRA_FOLDER.is_dir():
+        for root, dirs, files in os.walk(EXTRA_FOLDER):
+            rel_path = pathlib.Path(root).relative_to(EXTRA_FOLDER)
             dest_dir = steam_settings / rel_path
             dest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -987,7 +989,7 @@ def _mark_complete_if_success(html_path: Path):
     if not expected_imgs.issubset(present_imgs):
         return False
 
-    extra_src = pathlib.Path(__file__).resolve().parent / ".extra"
+    extra_src = pathlib.Path(__file__).resolve().parent / "Extra"
     if extra_src.is_dir():
         for root, _, files in os.walk(extra_src):
             rel = pathlib.Path(root).relative_to(extra_src)
@@ -1024,6 +1026,43 @@ def _run_main_in_thread(html_path: Path):
     finally:
         job_tracker.finish_job()
         sys.argv = old_argv
+
+# ------------------------------------------------------------
+class UserConfig:
+    def __init__(self):
+        self.config = {
+            "enabled": False,
+            "account_name": "",
+            "steamid": "",
+            "language": "English",
+            "country": "US"
+        }
+        self.load()
+    
+    def load(self):
+        if USER_CONFIG_FILE.exists():
+            try:
+                with open(USER_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    self.config = json.load(f)
+            except Exception:
+                pass
+    
+    def save(self):
+        try:
+            with open(USER_CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, indent=2)
+        except Exception as e:
+            print(f"Error saving user config: {e}")
+    
+    def get(self, key):
+        return self.config.get(key, "")
+    
+    def set(self, key, value):
+        self.config[key] = value
+        self.save()
+    
+    def is_enabled(self):
+        return self.config.get("enabled", False)
 
 # ------------------------------------------------------------
 class WatcherUI(tk.Tk):
@@ -1065,7 +1104,80 @@ class WatcherUI(tk.Tk):
             fg=theme['fg']
         )
 
-        self.settings_frame.config(bg=theme['bg'])
+        self.style.configure('TNotebook', background=theme['bg'])
+        self.style.configure('TNotebook.Tab', background=theme['widget_bg'], foreground=theme['fg'], lightcolor=theme['border'], borderwidth=0)
+        self.style.configure('TNotebook.Tab', background=theme['widget_bg'], foreground=theme['fg'], lightcolor=theme['border'])
+        self.style.map('TNotebook.Tab', background=[('selected', theme['widget_bg'])], foreground=[('selected', theme['fg'])])
+        self.style.configure('TCombobox', fieldbackground=theme['widget_bg'], background=theme['widget_bg'], foreground=theme['fg'])
+        self.style.map('TCombobox', fieldbackground=[('readonly', theme['widget_bg'])], selectbackground=[('readonly', theme['widget_bg'])], selectforeground=[('readonly', theme['fg'])], arrowcolor=[('readonly', theme['fg'])])
+
+        def update_widget_colors(widget):
+            try:
+                if isinstance(widget, (Frame, Canvas)):
+                    widget.config(bg=theme['bg'])
+                elif isinstance(widget, (Label, Checkbutton)):
+                    widget.config(bg=theme['bg'], fg=theme['fg'])
+                elif isinstance(widget, Entry):
+                    widget.config(
+                        bg=theme['widget_bg'],
+                        fg=theme['fg'],
+                        insertbackground=theme['fg']
+                    )
+                elif isinstance(widget, Checkbutton):
+                    widget.config(
+                        bg=theme['bg'],
+                        fg=theme['fg'],
+                        activebackground=theme['bg'],
+                        activeforeground=theme['fg'],
+                        selectcolor=theme['widget_bg']
+                    )
+            
+                if isinstance(widget, ttk.Combobox):
+                    widget.config(style='TCombobox')
+
+            except Exception as e:
+                pass
+
+            for child in widget.winfo_children():
+                update_widget_colors(child)
+
+        if self.settings_frame.winfo_ismapped():
+            update_widget_colors(self.settings_frame)
+            self.settings_frame.config(bg=theme['bg'])
+            for tab in [self.user_tab]:
+                tab.config(bg=theme['bg'])
+                update_widget_colors(tab)
+
+        self.configure(bg=theme['bg'])
+        self.counter_label.config(bg=theme['bg'], fg=theme['fg'])
+        self.list_frame.config(bg=theme['bg'])
+        self.canvas.config(bg=theme['bg'])
+        self.inner_frame.config(bg=theme['bg'])
+        self.scrollbar.config(bg=theme['widget_bg'], troughcolor=theme['bg'])
+
+        for btn in [self.mass_close_btn, self.settings_btn, self.theme_btn]:
+            btn.config(
+                bg=theme['button_bg'],
+                fg=theme['fg'],
+                activebackground=theme['active_bg']
+            )
+
+        self.style.configure(f'{theme["progress"]}.Horizontal.TProgressbar', background=theme['progress'], troughcolor=theme['widget_bg'])
+
+        for widgets in self._row_widgets.values():
+            if widgets['frame'].winfo_exists():
+                widgets['frame'].config(bg=theme['widget_bg'], highlightbackground=theme['border'])
+                widgets['top_frame'].config(bg=theme['widget_bg'])
+                widgets['bottom_frame'].config(bg=theme['widget_bg'])
+                widgets['percent'].config(bg=theme['widget_bg'], fg=theme['fg'])
+                widgets['name_label'].config(bg=theme['widget_bg'], fg=theme['fg'])
+                widgets['path_label'].config(bg=theme['button_bg'], fg=theme['fg'])
+                widgets['attention_btn'].config(bg=theme['button_bg'], fg=theme['fg'])
+                widgets['close_btn'].config(bg=theme['button_bg'], fg=theme['fg'])
+                widgets['progress'].configure(style=f'{theme["progress"]}.Horizontal.TProgressbar')
+
+        self.settings_frame.config(height=500, bg=theme['bg'])
+        self.settings_frame.pack_propagate(False)
 
         self.configure(bg=theme['bg'])
         self.counter_label.config(bg=theme['bg'], fg=theme['fg'])
@@ -1083,6 +1195,11 @@ class WatcherUI(tk.Tk):
             fg=theme['fg']
         )
         
+        self.mass_close_btn.config(
+            bg=theme['button_bg'],
+            fg=theme['fg']
+        )
+
         for path, widgets in self._row_widgets.items():
             if widgets['frame'].winfo_exists():
                 widgets['frame'].config(
@@ -1145,16 +1262,149 @@ class WatcherUI(tk.Tk):
             fg=theme['fg']
         )
         title.pack(pady=10)
-        
-        placeholder = Label(
-            self.settings_frame,
-            text="Settings options will appear here",
-            font=("Helvetica", 12),
+
+        tablist = ttk.Notebook(self.settings_frame)
+        tablist.pack(fill="both", expand=True, padx=10, pady=10)
+
+        self.user_tab = Frame(tablist, bg=theme['bg'])
+        tablist.add(self.user_tab, text="User Config")
+
+        tab_separator = Frame(self.user_tab, height=2, bg=theme['border'])
+        tab_separator.pack(fill="x", pady=(0, 10))
+
+        settings_container = Frame(self.user_tab, bg=theme['bg'])
+        settings_container.pack(pady=10, padx=20, fill="x")
+
+        enable_frame = Frame(settings_container, bg=theme['bg'])
+        enable_frame.pack(fill="x", pady=5)
+        self.enable_var = tk.BooleanVar(value=self.user_config.is_enabled())
+        Checkbutton(
+            enable_frame,
+            text="Enable User Config",
+            variable=self.enable_var,
+            command=self._toggle_config_fields,
             bg=theme['bg'],
+            fg=theme['fg'],
+            activebackground=theme['bg'],
+            activeforeground=theme['fg'],
+            selectcolor=theme['widget_bg']
+        ).pack(anchor="w")
+
+        self.fields_frame = Frame(settings_container, bg=theme['bg'])
+        self.fields_frame.pack(fill="x", pady=10)
+
+        account_frame = Frame(self.fields_frame, bg=theme['bg'])
+        account_frame.pack(fill="x", pady=5)
+        Label(account_frame, text="Account Name:", bg=theme['bg'], fg=theme['fg'], width=12, anchor="e").pack(side="left", padx=(0, 10))
+        self.account_var = tk.StringVar(value=self.user_config.get("account_name"))
+        self.account_entry = Entry(
+            account_frame, 
+            textvariable=self.account_var,
+            width=30,
+            bg=theme['widget_bg'],
             fg=theme['fg']
         )
-        placeholder.pack(pady=10)
+        self.account_entry.pack(side="left", fill="x", expand=True)
+        self.account_entry.bind("<KeyRelease>", lambda e: self._save_config("account_name", self.account_var.get()))
+
+        steamid_frame = Frame(self.fields_frame, bg=theme['bg'])
+        steamid_frame.pack(fill="x", pady=5)
+        Label(steamid_frame, text="SteamID:", bg=theme['bg'], fg=theme['fg'], width=12, anchor="e").pack(side="left", padx=(0, 10))
+        current_steamid = self.user_config.get("steamid")
+
+        if not current_steamid:
+            current_steamid = "76561197960287930"
+            self.user_config.set("steamid", current_steamid)
+            
+        self.steamid_var = tk.StringVar(value=current_steamid)
+        self.steamid_entry = Entry(
+            steamid_frame, 
+            textvariable=self.steamid_var,
+            width=30,
+            bg=theme['widget_bg'],
+            fg=theme['fg']
+        )
+        self.steamid_entry.pack(side="left", fill="x", expand=True)
+        self.steamid_entry.bind("<KeyRelease>", lambda e: self._save_config("steamid", self.steamid_var.get()))
+
+        lang_frame = Frame(self.fields_frame, bg=theme['bg'])
+        lang_frame.pack(fill="x", pady=5)
+        Label(lang_frame, text="Language:", bg=theme['bg'], fg=theme['fg'], width=12, anchor="e").pack(side="left", padx=(0, 10))
+        self.lang_var = tk.StringVar(value=self.user_config.get("language"))
+        lang_dropdown = ttk.Combobox(
+            lang_frame,
+            textvariable=self.lang_var,
+            values=["English", "French", "German", "Spanish", "Russian", "Japanese", "Chinese", "Korean", "Portuguese"],
+            state="readonly",
+            width=27
+        )
+        lang_dropdown.pack(side="left")
+        lang_dropdown.bind("<<ComboboxSelected>>", lambda e: self._save_config("language", self.lang_var.get()))
+
+        country_frame = Frame(self.fields_frame, bg=theme['bg'])
+        country_frame.pack(fill="x", pady=5)
+        Label(country_frame, text="Country:", bg=theme['bg'], fg=theme['fg'], width=12, anchor="e").pack(side="left", padx=(0, 10))
+        self.country_var = tk.StringVar(value=self.user_config.get("country"))
+        country_dropdown = ttk.Combobox(
+            country_frame,
+            textvariable=self.country_var,
+            values=["US", "UK", "DE", "FR", "RU", "JP", "KR", "CN", "TW", "IT", "ES", "PT"],
+            state="readonly",
+            width=5
+        )
+        country_dropdown.pack(side="left")
+        country_dropdown.bind("<<ComboboxSelected>>", lambda e: self._save_config("country", self.country_var.get()))
+
+        self._toggle_config_fields()
         self.settings_btn.lift()
+
+    def _update_user_ini(self):
+        ini_path = EXTRA_FOLDER / "configs.user.ini"
+    
+        if self.user_config.is_enabled():    
+            lines = ["[user::general]"]
+        
+            if self.user_config.get("account_name"):
+                lines.append(f"account_name={self.user_config.get('account_name')}")
+            if self.user_config.get("steamid"):
+                lines.append(f"account_steamid={self.user_config.get('steamid')}")
+            language = self.user_config.get("language")
+            if language:
+                lines.append(f"language={language.lower()}")
+            if self.user_config.get("country"):
+                lines.append(f"ip_country={self.user_config.get('country')}")
+        
+            if len(lines) > 1:
+                ini_path.write_text("\n".join(lines), encoding="utf-8")
+            elif ini_path.exists():
+                ini_path.unlink()
+        else:
+            if ini_path.exists():
+                try:
+                    ini_path.unlink()
+                except Exception as e:
+                    print(f"Error removing user config: {e}")
+
+    def _toggle_config_fields(self):
+        state = "normal" if self.enable_var.get() else "disabled"
+        
+        for child in self.fields_frame.winfo_children():
+            for widget in child.winfo_children():
+                if isinstance(widget, (Entry, ttk.Combobox)):
+                    widget.configure(state=state)
+        
+        self.user_config.set("enabled", self.enable_var.get())
+        self._update_user_ini()
+
+    def _save_config(self, key, value):
+        self.user_config.set(key, value)
+        
+        if key != "enabled" and value and not self.enable_var.get():
+            self.enable_var.set(True)
+            self._toggle_config_fields()
+
+        if self.user_config.is_enabled():
+            self._update_user_ini()
 
     def __init__(self, file_queue: queue.Queue):
         super().__init__()
@@ -1257,6 +1507,8 @@ class WatcherUI(tk.Tk):
         self.inner_frame.grid_rowconfigure(len(all_html_files), minsize=5)
 
         self.inner_frame.bind("<Configure>", self._update_scroll_region)
+
+        self.user_config = UserConfig()
 
         self.toggle_theme()
 
