@@ -260,9 +260,11 @@ GAMES_ROOT = pathlib.Path(__file__).resolve().parent / "Games"
 GAMES_ROOT.mkdir(parents=True, exist_ok=True)
 OLD_HTML_FOLDER = TEMP_FOLDER / "old_html"
 OLD_HTML_FOLDER.mkdir(parents=True, exist_ok=True)
-TOOLS_FOLDER = pathlib.Path(__file__).resolve().parent / ".tools"
+APP_FOLDER = pathlib.Path(__file__).resolve().parent / ".app"
+APP_FOLDER.mkdir(parents=True, exist_ok=True)
+TOOLS_FOLDER = APP_FOLDER / "tools"
 TOOLS_FOLDER.mkdir(parents=True, exist_ok=True)
-USER_CONFIG_FILE = TOOLS_FOLDER / "userconfig.json"
+USER_CONFIG_FILE = APP_FOLDER / "userconfig.json"
 
 # ----------------------------------------------------------------------
 def _closest_folder(base_path: Path, html_name: str) -> Path | None:
@@ -735,7 +737,7 @@ def main():
             }
         )
 
-    hidden_icon_src = TOOLS_FOLDER / "icons" / "hidden.jpg"
+    hidden_icon_src = APP_FOLDER / "icons" / "hidden.jpg"
     hidden_icon_dest = achievement_images / "hidden.jpg"
 
     if not hidden_icon_src.exists():
