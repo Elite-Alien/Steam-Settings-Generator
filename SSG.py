@@ -125,10 +125,9 @@ def check_existing_completions() -> dict:
     return progress_state
 
 def update_progress(percent: int, html_path: Path) -> None:
-    temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
-    state = load_progress_state(temp_dir)
+    state = load_progress_state(TEMP_FOLDER)
     state[html_path.name] = {"percent": percent}
-    save_progress_state(state, temp_dir)
+    save_progress_state(state, TEMP_FOLDER)
     
     if global_ui and hasattr(global_ui, '_row_widgets'):
         def _safe_update():
@@ -249,19 +248,19 @@ HTML_PATTERN = re.compile(
 IMG_PATTERN = re.compile(r'([a-f0-9]{40})\.jpg', re.IGNORECASE)
 
 APP_URL_TEMPLATE = "https://shared.fastly.steamstatic.com/community_assets/images/apps/{app_id}/"
-TEMP_FOLDER = pathlib.Path(__file__).resolve().parent / ".temp"
+APP_FOLDER = pathlib.Path(__file__).resolve().parent / ".app"
+APP_FOLDER.mkdir(parents=True, exist_ok=True)
+TEMP_FOLDER = APP_FOLDER / "temp"
 TEMP_FOLDER.mkdir(parents=True, exist_ok=True)
 EXTRA_FOLDER = pathlib.Path(__file__).resolve().parent / "Extra"
 EXTRA_FOLDER.mkdir(parents=True, exist_ok=True)
-PROGRESS_STATE_FILE = TEMP_FOLDER / "progress.json"
+PROGRESS_STATE_FILE = APP_FOLDER / "progress.json"
 HTML_FOLDER = pathlib.Path(__file__).resolve().parent / "HTML"
 HTML_FOLDER.mkdir(parents=True, exist_ok=True)
 GAMES_ROOT = pathlib.Path(__file__).resolve().parent / "Games"
 GAMES_ROOT.mkdir(parents=True, exist_ok=True)
 OLD_HTML_FOLDER = TEMP_FOLDER / "old_html"
 OLD_HTML_FOLDER.mkdir(parents=True, exist_ok=True)
-APP_FOLDER = pathlib.Path(__file__).resolve().parent / ".app"
-APP_FOLDER.mkdir(parents=True, exist_ok=True)
 TOOLS_FOLDER = APP_FOLDER / "tools"
 TOOLS_FOLDER.mkdir(parents=True, exist_ok=True)
 USER_CONFIG_FILE = APP_FOLDER / "userconfig.json"
@@ -361,8 +360,8 @@ def _load_progress_state_fresh() -> dict:
 
 def load_progress_state(folder: Path | None = None) -> dict:
     if folder is None:
-        folder = pathlib.Path(__file__).resolve().parent / ".temp"
-    file_path = folder / "progress.json"
+        folder = TEMP_FOLDER
+    file_path = PROGRESS_STATE_FILE
     if not file_path.is_file():
         return {}
     try:
@@ -382,8 +381,8 @@ def _make_json_serialisable(obj):
 
 def save_progress_state(state: dict, folder: Path | None = None) -> None:
     if folder is None:
-        folder = pathlib.Path(__file__).resolve().parent / ".temp"
-    file_path = folder / "progress.json"
+        folder = APP_FOLDER
+    file_path = PROGRESS_STATE_FILE
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
     except Exception:
@@ -451,7 +450,6 @@ def download_images(
     dest_folder.mkdir(parents=True, exist_ok=True)
 
     total = len(filenames)
-    temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
 
     downloaded_files = set(dest_folder.iterdir())
     downloaded_count = 0
@@ -567,12 +565,11 @@ def main():
     html_content = read_local_file(str(html_path))
     soup = BeautifulSoup(html_content, "html.parser")
     
-    TEMP_FOLDER = pathlib.Path(__file__).resolve().parent / ".temp"
-    TEMP_FOLDER.mkdir(parents=True, exist_ok=True)
+    TEMP_FOLDER = APP_FOLDER / "temp"
 
     app_id = extract_app_id(soup)
     if app_id:
-        temp_files = (pathlib.Path(__file__).resolve().parent / ".temp").glob("*.txt")
+        temp_files = TEMP_FOLDER.glob("*.txt")
         for temp_file in temp_files:
             if temp_file.stem == html_path.stem:
                 continue
@@ -619,8 +616,7 @@ def main():
     steam_settings = base_folder / "steam_settings"
     achievement_images = steam_settings / "achievement_images"
     
-    TEMP_FOLDER = pathlib.Path(__file__).resolve().parent / ".temp"
-    TEMP_FOLDER.mkdir(parents=True, exist_ok=True)
+    TEMP_FOLDER = APP_FOLDER / "temp"
 
     processed_folder = script_dir
     progress_state = load_progress_state(processed_folder)
@@ -929,13 +925,12 @@ def _wrapped_download(app_id: str, filenames: list[str], dest: Path, cb: callabl
 
         cb(i, len(filenames))
 
-        temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
-        state = load_progress_state(temp_dir)
+        state = load_progress_state(TEMP_FOLDER)
         html_path = globals().get("html_path")
         if isinstance(html_path, Path):
             percent = int(i / len(filenames) * 100)
             state[html_path.name] = {"percent": percent}
-            save_progress_state(state, temp_dir)
+            save_progress_state(state, TEMP_FOLDER)
 
     update_progress(100, html_path)
 
@@ -946,10 +941,9 @@ def _wrapped_download(app_id: str, filenames: list[str], dest: Path, cb: callabl
         except Exception as e:
             print(f"⚠️ Error moving files to old folder: {e}")
 
-    temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
-    state = load_progress_state(temp_dir)
+    state = load_progress_state(TEMP_FOLDER)
     state[html_path.name] = {"percent": 100}
-    save_progress_state(state, temp_dir)
+    save_progress_state(state, TEMP_FOLDER)
 
 # ------------------------------------------------------------
 def _mark_complete_if_success(html_path: Path):
@@ -1748,8 +1742,7 @@ class WatcherUI(tk.Tk):
         files_to_delete = list(self._row_widgets.keys())
     
         for html_path in files_to_delete:
-            temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
-            temp_txt = temp_dir / f"{html_path.name}.txt"
+            temp_txt = TEMP_FOLDER / f"{html_path.name}.txt"
 
             temp_data: dict[str, str] = {}
             if temp_txt.is_file():
@@ -1805,7 +1798,7 @@ class WatcherUI(tk.Tk):
                                 pass
 
             try:
-                prog_path = pathlib.Path(__file__).resolve().parent / ".temp" / "progress.json"
+                prog_path = PROGRESS_STATE_FILE
                 if prog_path.is_file():
                     prog_data = json.loads(prog_path.read_text(encoding="utf-8"))
                     if html_path.name in prog_data:
@@ -1857,8 +1850,7 @@ class WatcherUI(tk.Tk):
         if not _gui_yes_no(f"Do you really want to delete {html_path.name}?"):
             return
 
-        temp_dir = pathlib.Path(__file__).resolve().parent / ".temp"
-        temp_txt = temp_dir / f"{html_path.name}.txt"
+        temp_txt = TEMP_FOLDER / f"{html_path.name}.txt"
 
         temp_data: dict[str, str] = {}
         if temp_txt.is_file():
@@ -1922,13 +1914,13 @@ class WatcherUI(tk.Tk):
                         try:
                             shutil.rmtree(game_dir, ignore_errors=True)
                             print(
-                                f"🗑️  Deleted game folder {game_dir} (fallback to GAMEDIR from .temp file)"
+                                f"🗑️  Deleted game folder {game_dir} (fallback to GAMEDIR from temp file)"
                             )
                         except Exception as e:
                             print(f"⚠️  Could not delete game folder {game_dir}: {e}")
 
         try:
-            prog_path = pathlib.Path(__file__).resolve().parent / ".temp" / "progress.json"
+            prog_path = PROGRESS_STATE_FILE
             if prog_path.is_file():
                 prog_data = json.loads(prog_path.read_text(encoding="utf-8"))
                 if html_path.name in prog_data:
@@ -1994,7 +1986,7 @@ def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Ev
     processed: set[Path] = set(all_html_files)
 
     progress_state = load_progress_state()
-    _progress_path = pathlib.Path(__file__).resolve().parent / ".temp" / "progress.json"
+    _progress_path = PROGRESS_STATE_FILE
     _last_mtime = _progress_path.stat().st_mtime if _progress_path.is_file() else 0
 
     def _progress_reload_json():
@@ -2039,9 +2031,11 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and Path(sys.argv[1]).suffix.lower() == ".html":
         main()
     else:
+        APP_FOLDER = pathlib.Path(__file__).resolve().parent / ".app"
+        APP_FOLDER.mkdir(parents=True, exist_ok=True)
         HTML_FOLDER = pathlib.Path(__file__).resolve().parent / "HTML"
         HTML_FOLDER.mkdir(parents=True, exist_ok=True)
-        TEMP_FOLDER = pathlib.Path(__file__).resolve().parent / ".temp"
+        TEMP_FOLDER = APP_FOLDER / "temp"
         TEMP_FOLDER.mkdir(parents=True, exist_ok=True)
         GAMES_ROOT = pathlib.Path(__file__).resolve().parent / "Games"
         GAMES_ROOT.mkdir(parents=True, exist_ok=True)
