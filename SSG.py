@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, sys, re, json, argparse, difflib, pathlib, requests, shutil, subprocess, threading, queue, time, webbrowser
+import os, sys, re, json, argparse, difflib, pathlib, requests, shutil, subprocess, threading, queue, time, webbrowser, zipfile
 from collections import defaultdict
 from tkinter import Canvas, Scrollbar, Frame, Label, ttk, Checkbutton, Entry
 from pathlib import Path
@@ -247,9 +247,14 @@ HTML_PATTERN = re.compile(
 )
 IMG_PATTERN = re.compile(r'([a-f0-9]{40})\.jpg', re.IGNORECASE)
 
+ROOT_DIR = pathlib.Path(__file__).resolve().parent
 APP_URL_TEMPLATE = "https://shared.fastly.steamstatic.com/community_assets/images/apps/{app_id}/"
 APP_FOLDER = pathlib.Path(__file__).resolve().parent / ".app"
 APP_FOLDER.mkdir(parents=True, exist_ok=True)
+VERSION_FILE = APP_FOLDER / "version.txt"
+LATEST_RELEASE_URL = "https://api.github.com/repos/Elite-Alien/Steam-Settings-Generator/releases/latest"
+DOWNLOADS_FOLDER = APP_FOLDER / "downloads"
+DOWNLOADS_FOLDER.mkdir(parents=True, exist_ok=True)
 TEMP_FOLDER = APP_FOLDER / "temp"
 TEMP_FOLDER.mkdir(parents=True, exist_ok=True)
 EXTRA_FOLDER = pathlib.Path(__file__).resolve().parent / "Extra"
@@ -264,6 +269,128 @@ OLD_HTML_FOLDER.mkdir(parents=True, exist_ok=True)
 TOOLS_FOLDER = APP_FOLDER / "tools"
 TOOLS_FOLDER.mkdir(parents=True, exist_ok=True)
 USER_CONFIG_FILE = APP_FOLDER / "userconfig.json"
+GENERAL_SETTINGS_FILE = APP_FOLDER / "general_settings.json"
+
+# ----------------------------------------------------------------------
+def check_for_updates(manual=False):
+    if not manual and not GENERAL_SETTINGS.get("auto_update", True):
+        return
+    try:
+        current_version = "v0.0"
+        if VERSION_FILE.exists():
+            current_version = VERSION_FILE.read_text(encoding="utf-8").strip()
+            if manual:
+                print(f"Current version: {current_version}")
+        
+        response = requests.get(LATEST_RELEASE_URL, timeout=10)
+        response.raise_for_status()
+        release_data = response.json()
+        latest_tag = release_data["tag_name"]
+        
+        if manual:
+            print(f"Latest version: {latest_tag}")
+        
+        if latest_tag != current_version:
+            msg = f"New version available: {latest_tag} Would you like to download it now?"
+            if _gui_yes_no(msg):
+                zip_asset = None
+                for asset in release_data.get("assets", []):
+                    if asset["name"].endswith(".zip"):
+                        zip_asset = asset
+                        break
+                
+                if not zip_asset:
+                    if manual:
+                        if global_ui is not None:
+                            def _no_asset():
+                                messagebox.showerror("Update Error", "No zip file found in the release assets")
+                            global_ui.after(0, _no_asset)
+                        else:
+                            messagebox.showerror("Update Error", "No zip file found in the release assets")
+                    else:
+                        print("No zip file found in the release assets")
+                    return
+                
+                DOWNLOADS_FOLDER.mkdir(parents=True, exist_ok=True)
+                zip_path = DOWNLOADS_FOLDER / zip_asset["name"]
+                
+                download_url = zip_asset["browser_download_url"]
+                response = requests.get(download_url, stream=True, timeout=30)
+                response.raise_for_status()
+                
+                with open(zip_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                
+                with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                    temp_extract = ROOT_DIR / "update_temp"
+                    temp_extract.mkdir(exist_ok=True)
+                    
+                    zip_ref.extractall(temp_extract)
+                    
+                    extracted_folder = next(temp_extract.iterdir())
+                    for item in extracted_folder.iterdir():
+                        dest = ROOT_DIR / item.name
+                        if dest.is_dir():
+                            shutil.rmtree(dest, ignore_errors=True)
+                        elif dest.exists():
+                            dest.unlink()
+                        shutil.move(str(item), str(ROOT_DIR))
+                    
+                    shutil.rmtree(temp_extract, ignore_errors=True)
+
+                ssg_path = ROOT_DIR / "SSG.py"
+                if ssg_path.exists():
+                    if not sys.platform.startswith("win"):
+                        os.chmod(ssg_path, 0o755)
+                        print(f"✅ Set executable permissions on SSG.py")
+                    else:
+                        print("⚠️ Skipping chmod on Windows system")
+
+                VERSION_FILE.write_text(latest_tag, encoding="utf-8")
+
+                zip_path.unlink(missing_ok=True)
+                
+                if manual:
+                    if global_ui is not None:
+                        def _restart_prompt():
+                            if messagebox.askyesno("Update Complete", "Update installed successfully. Restart now?"):
+                                restart_application()
+                        global_ui.after(0, _restart_prompt)
+                    else:
+                        if _gui_yes_no("Update installed successfully. Restart now?"):
+                            restart_application()
+                else:
+                    messagebox.showinfo("Update Complete", "Update installed successfully. The application will now restart.")
+                    restart_application()
+            else:
+                print("Update canceled by user")
+        else:
+            if manual:
+                if global_ui is not None:
+                    def _show_info():
+                        messagebox.showinfo("Update Check", "You have the latest version.")
+                    global_ui.after(0, _show_info)
+                else:
+                    messagebox.showinfo("Update Check", "You have the latest version.")
+            else:
+                print("You have the latest version")
+            
+    except Exception as e:
+        print(f"⚠️ Update check failed: {e}")
+        if manual:
+            if global_ui is not None:
+                def _show_error():
+                    messagebox.showerror("Update Error", f"Failed to update: {str(e)}")
+                global_ui.after(0, _show_error)
+            else:
+                messagebox.showerror("Update Error", f"Failed to update: {str(e)}")
+        else:
+            pass
+
+def restart_application():
+    python = sys.executable
+    os.execl(python, python, *sys.argv)
 
 # ----------------------------------------------------------------------
 def _closest_folder(base_path: Path, html_name: str) -> Path | None:
@@ -1024,41 +1151,55 @@ def _run_main_in_thread(html_path: Path):
         sys.argv = old_argv
 
 # ------------------------------------------------------------
-class UserConfig:
-    def __init__(self):
-        self.config = {
-            "enabled": False,
-            "account_name": "",
-            "steamid": "",
-            "language": "English",
-            "country": "US"
-        }
+class SettingsManager:
+    def __init__(self, config_file: Path, default_settings: dict):
+        self.config_file = config_file
+        self.default_settings = default_settings
+        self.settings = default_settings.copy()
         self.load()
     
     def load(self):
-        if USER_CONFIG_FILE.exists():
-            try:
-                with open(USER_CONFIG_FILE, 'r', encoding='utf-8') as f:
-                    self.config = json.load(f)
-            except Exception:
-                pass
+        try:
+            if self.config_file.exists():
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    self.settings = {**self.default_settings, **json.load(f)}
+        except Exception as e:
+            print(f"Error loading {self.config_file.name}: {e}")
+            self.settings = self.default_settings.copy()
     
     def save(self):
         try:
-            with open(USER_CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(self.config, f, indent=2)
+            self.config_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json.dump(self.settings, f, indent=2)
         except Exception as e:
-            print(f"Error saving user config: {e}")
+            print(f"Error saving {self.config_file.name}: {e}")
     
-    def get(self, key):
-        return self.config.get(key, "")
+    def get(self, key, default=None):
+        return self.settings.get(key, self.default_settings.get(key, default))
     
-    def set(self, key, value):
-        self.config[key] = value
-        self.save()
-    
-    def is_enabled(self):
-        return self.config.get("enabled", False)
+    def set(self, key, value, autosave=True):
+        self.settings[key] = value
+        if autosave:
+            self.save()
+
+USER_SETTINGS = SettingsManager(
+    USER_CONFIG_FILE,
+    {
+        "enabled": False,
+        "account_name": "",
+        "steamid": "76561197960287930",
+        "language": "English",
+        "country": "US"
+    }
+)
+
+GENERAL_SETTINGS = SettingsManager(
+    GENERAL_SETTINGS_FILE,
+    {
+        "auto_update": True
+    }
+)
 
 # ------------------------------------------------------------
 class WatcherUI(tk.Tk):
@@ -1140,7 +1281,7 @@ class WatcherUI(tk.Tk):
         if self.settings_frame.winfo_ismapped():
             update_widget_colors(self.settings_frame)
             self.settings_frame.config(bg=theme['bg'])
-            for tab in [self.user_tab]:
+            for tab in [self.general_tab, self.user_tab]:
                 tab.config(bg=theme['bg'])
                 update_widget_colors(tab)
 
@@ -1234,6 +1375,20 @@ class WatcherUI(tk.Tk):
                     fg=theme['fg']
                 )
 
+    def _toggle_auto_update(self):
+        self.general_settings.set("auto_update", self.auto_update_var.get())
+        self._update_manual_btn_visibility()
+
+    def _toggle_dark_mode_setting(self):
+        self.general_settings.set("dark_mode", self.dark_mode_var.get())
+        self.toggle_theme()  # Existing theme toggle method
+
+    def _update_manual_btn_visibility(self):
+        if self.auto_update_var.get():
+            self.manual_update_btn.config(state=tk.DISABLED)
+        else:
+            self.manual_update_btn.config(state=tk.NORMAL)
+
     def toggle_settings_menu(self):
         if self.settings_frame.winfo_ismapped():
             self.settings_btn.lift()
@@ -1262,6 +1417,38 @@ class WatcherUI(tk.Tk):
         tablist = ttk.Notebook(self.settings_frame)
         tablist.pack(fill="both", expand=True, padx=10, pady=10)
 
+        self.general_tab = Frame(tablist, bg=theme['bg'])
+        tablist.add(self.general_tab, text="General Config")
+
+        general_container = Frame(self.general_tab, bg=theme['bg'])
+        general_container.pack(pady=10, padx=20, fill="x")
+
+        update_frame = Frame(general_container, bg=theme['bg'])
+        update_frame.pack(fill="x", pady=5)
+        
+        self.auto_update_var = tk.BooleanVar(value=self.general_settings.get("auto_update", True))
+        Checkbutton(
+            update_frame,
+            text="Automatic Update Check",
+            variable=self.auto_update_var,
+            command=self._toggle_auto_update,
+            bg=theme['bg'],
+            fg=theme['fg'],
+            activebackground=theme['bg'],
+            activeforeground=theme['fg'],
+            selectcolor=theme['widget_bg']
+        ).pack(side="left")
+        
+        self.manual_update_btn = Button(
+            update_frame,
+            text="Manual Update",
+            command=lambda: threading.Thread(target=check_for_updates, args=(True,), daemon=True).start(),
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            state=tk.NORMAL if not self.auto_update_var.get() else tk.DISABLED
+        )
+        self.manual_update_btn.pack(side="right")
+        
         self.user_tab = Frame(tablist, bg=theme['bg'])
         tablist.add(self.user_tab, text="User Config")
 
@@ -1273,7 +1460,7 @@ class WatcherUI(tk.Tk):
 
         enable_frame = Frame(settings_container, bg=theme['bg'])
         enable_frame.pack(fill="x", pady=5)
-        self.enable_var = tk.BooleanVar(value=self.user_config.is_enabled())
+        self.enable_var = tk.BooleanVar(value=self.user_config.get("enabled", False))
         Checkbutton(
             enable_frame,
             text="Enable User Config",
@@ -1357,7 +1544,7 @@ class WatcherUI(tk.Tk):
     def _update_user_ini(self):
         ini_path = EXTRA_FOLDER / "configs.user.ini"
     
-        if self.user_config.is_enabled():    
+        if self.user_config.get("enabled", False):    
             lines = ["[user::general]"]
         
             if self.user_config.get("account_name"):
@@ -1399,7 +1586,7 @@ class WatcherUI(tk.Tk):
             self.enable_var.set(True)
             self._toggle_config_fields()
 
-        if self.user_config.is_enabled():
+        if self.user_config.get("enabled", False):
             self._update_user_ini()
 
     def __init__(self, file_queue: queue.Queue):
@@ -1504,7 +1691,10 @@ class WatcherUI(tk.Tk):
 
         self.inner_frame.bind("<Configure>", self._update_scroll_region)
 
-        self.user_config = UserConfig()
+        self.user_settings = USER_SETTINGS
+        self.general_settings = GENERAL_SETTINGS
+        self.dark_mode = self.general_settings.get("dark_mode", False)
+        self.user_config = USER_SETTINGS
 
         self.toggle_theme()
 
@@ -2028,6 +2218,9 @@ def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Ev
         time.sleep(1)
 
 if __name__ == "__main__":
+    if GENERAL_SETTINGS.get("auto_update", True):
+        threading.Thread(target=check_for_updates, daemon=True).start()
+
     if len(sys.argv) > 1 and Path(sys.argv[1]).suffix.lower() == ".html":
         main()
     else:
@@ -2072,4 +2265,9 @@ if __name__ == "__main__":
         )
         watcher_thread.start()
 
-        global_ui.mainloop()
+    if not VERSION_FILE.exists():
+        VERSION_FILE.write_text("v0.3", encoding="utf-8")
+    
+    DOWNLOADS_FOLDER.mkdir(parents=True, exist_ok=True)
+
+    global_ui.mainloop()
