@@ -1,5 +1,5 @@
-# Steam-Settings-Generator
-This tool creates the achievements and DLC files needed for steam_settings, downloads achievement images, makes the steam_appid.txt, and copies over your defined files into a steam_settings folder.
+# Steam Settings Generator
+This tool creates the achievements.json, DLC files, downloads achievement images, makes the steam_appid.txt, and various other files it can make and obtain to place within the steam_settings folder or for use with the "steam_settings".
 
 If you want just the DLC or Achievement scraping by itself see my modular entries.
 1. https://github.com/Elite-Alien/Steam-Achievement-Scrapper/tree/main
@@ -39,8 +39,19 @@ The GUI is very basic. It's nothing more than a simple window that runs while yo
 6. Go to the "Games" folder beside SSG.py. The files will be in this folder.
 7. Done
 
-Warning
--------
-Use this at your own risk. This shouldn't harm a system in any way, shape or form, but I will not be blamed for neglagence on your part. This is just a combination of my two original scripts, with modifications. I wrote these for myself to get Achievements, Achievement Images, and DLC files made and expanded it to this one overall tool. I am putting this up to let anyone who wishes to use it at their own risk. I will maybe supply a little support, but I will be very hands off with this. As it functions as intended if you have the correct python libraries installed on your Linux machine.
+## Disclaimer Statement
+Steam Settings Generator is an independent, open‑source application. It is not affiliated with, endorsed by, or sponsored by Valve Corporation, Steam, or any of Valve’s subsidiaries or related entities. The developers of Steam Settings Generator make no claim to ownership, trademark, or any other intellectual‑property rights in Valve’s products, services, or brand assets.
 
-If you want to make changes, fork this and add them. Share your changes with others and let whomever that wishes to use it use those features. That is all. Happy gaming.
+### No Association or Endorsement
+- The software does not use any proprietary Valve code, APIs, or assets beyond publicly available information.
+- Any references to “Steam” are solely descriptive of the service the application interacts with for user convenience.
+- Valve, Steam, and their logos remain the exclusive property of Valve Corporation.
+
+### Ownership and Rights
+- All rights to Steam Settings Generator reside with its open‑source contributors.
+- The application does not claim any ownership, license, or other rights to Valve’s software, trademarks, or patents.
+
+### Intended Use
+- The tool is provided as‑is to facilitate configuration tasks for users of Steam‑based games that the user legally purchased.
+- It is intended for personal, non‑commercial use and may be integrated with other open‑source projects at the user’s discretion.
+- Steam Settings Generator does not condone, support, or facilitate piracy of any software, games, or digital content. It is solely a utility for managing legally purchased games.
