@@ -254,6 +254,7 @@ APP_FOLDER.mkdir(parents=True, exist_ok=True)
 VERSION_FILE = APP_FOLDER / "version.txt"
 GBE_VERSION_FILE = APP_FOLDER / "gbe.txt"
 LATEST_RELEASE_URL = "https://api.github.com/repos/Elite-Alien/Steam-Settings-Generator/releases/latest"
+RELEASE_URL = "https://api.github.com/repos/Elite-Alien/Steam-Settings-Generator/releases"
 GBE_LATEST_RELEASE_URL = "https://api.github.com/repos/Detanup01/gbe_fork/releases/latest"
 GBE_FOLDER = APP_FOLDER / "gbe"
 GBE_LINUX = GBE_FOLDER / "Linux"
@@ -1587,9 +1588,12 @@ class WatcherUI(tk.Tk):
     def _update_manual_btn_visibility(self):
         auto_update = self.general_settings.get("auto_update", True)
         self.manual_update_btn.config(state=tk.DISABLED if auto_update else tk.NORMAL)
+        self.downgrade_btn.config(state=tk.NORMAL if not auto_update else tk.DISABLED)
 
         auto_update_gbe = self.general_settings.get("auto_update_gbe", True)
         self.manual_update_gbe_btn.config(state=tk.DISABLED if auto_update_gbe else tk.NORMAL)
+        self.downgrade_gbe_btn.config(state=tk.NORMAL if not auto_update_gbe else tk.DISABLED)
+        
 
     def toggle_settings_menu(self):
         if self.settings_frame.winfo_ismapped():
@@ -1791,35 +1795,88 @@ class WatcherUI(tk.Tk):
 
     def downgrader(self, target: str = "gbe"):
         if target == "app":
-            if not _gui_yes_no("Downgrade the application to the previous version?"):
-                return
-
             try:
                 current_version = VERSION_FILE.read_text().strip() if VERSION_FILE.exists() else "v0.0"
-                releases = requests.get(LATEST_RELEASE_URL).json()
-                versions = [r['tag_name'] for r in releases.get('releases', [])]
-                current_index = versions.index(current_version) if current_version in versions else -1
-                if current_index <= 0:
-                    messagebox.showinfo("Downgrade", "No older version available")
+            
+                response = requests.get(RELEASE_URL, timeout=10)
+                response.raise_for_status()
+                all_releases = response.json()
+            
+                versions = []
+                for release in all_releases:
+                    try:
+                        ver = release['tag_name'].lstrip('v').split('.')
+                        ver_tuple = tuple(map(int, ver))
+                        versions.append((ver_tuple, release))
+                    except Exception:
+                        continue
+            
+                versions.sort(reverse=True, key=lambda x: x[0])
+            
+                if not versions:
+                    messagebox.showinfo("Downgrade", "No valid versions found")
                     return
-                
-                target_version = versions[current_index - 1]
-                asset = next((a for a in releases['assets'] if a['name'].endswith('.zip')), None)
-                if not asset:
-                    raise Exception("No zip asset found for version")
 
-                zip_path = DOWNLOADS_FOLDER / asset['name']
-                with requests.get(asset['browser_download_url'], stream=True) as r:
+                current_tuple = tuple(map(int, current_version.lstrip('v').split('.')))
+                latest_tuple = versions[0][0]
+            
+                current_index = next((i for i, (v, _) in enumerate(versions) if v == current_tuple), -1)
+
+                if current_index == -1:
+                    messagebox.showinfo("Downgrade", f"Current version {current_version} not found in releases")
+                    return
+
+                if current_tuple < latest_tuple:
+                    if _gui_yes_no(f"Your version {current_version} is outdated. Upgrade to {versions[0][1]['tag_name']} instead?"):
+                        target_release = versions[0][1]
+                    else:
+                        if current_index + 1 >= len(versions):
+                            messagebox.showinfo("Downgrade", "No older versions available")
+                            return
+                        target_release = versions[current_index + 1][1]
+                else:
+                    if current_index + 1 >= len(versions):
+                        messagebox.showinfo("Downgrade", "No older versions available")
+                        return
+                    target_release = versions[current_index + 1][1]
+
+                target_version = target_release['tag_name']
+                if not _gui_yes_no(f"Install version {target_version}?"):
+                    return
+
+                zip_asset = next((a for a in target_release['assets'] if a['name'].endswith('.zip')), None)
+                if not zip_asset:
+                    raise Exception("No files found for older version")
+
+                zip_path = DOWNLOADS_FOLDER / zip_asset['name']
+                with requests.get(zip_asset['browser_download_url'], stream=True) as r:
                     with open(zip_path, 'wb') as f:
                         shutil.copyfileobj(r.raw, f)
 
                 with zipfile.ZipFile(zip_path) as zip_ref:
-                    zip_ref.extractall(ROOT_DIR)
+                    temp_extract = ROOT_DIR / "update_temp"
+                    temp_extract.mkdir(exist_ok=True)
+                    zip_ref.extractall(temp_extract)                
+                    extracted_folder = next(temp_extract.iterdir())
+                    for item in extracted_folder.iterdir():
+                        dest = ROOT_DIR / item.name
+                        if dest.is_dir():
+                            shutil.rmtree(dest, ignore_errors=True)
+                        elif dest.exists():
+                            dest.unlink()
+                        shutil.move(str(item), str(dest))
+                
+                    shutil.rmtree(temp_extract, ignore_errors=True)
 
-                zip_path.unlink()
-                VERSION_FILE.write_text(target_version)
-                messagebox.showinfo("Downgrade", f"Reverted to version {target_version}\n Restarting...")
-                restart_application()
+                ssg_path = ROOT_DIR / "SSG.py"
+                if ssg_path.exists() and not sys.platform.startswith("win"):
+                    os.chmod(ssg_path, 0o755)
+
+                zip_path.unlink(missing_ok=True)
+                VERSION_FILE.write_text(target_version, encoding="utf-8")
+            
+                if _gui_yes_no(f"Reverted to version {target_version}\n Restart now?"):
+                    restart_application()
 
             except Exception as e:
                 messagebox.showerror("Downgrade Failed", str(e))
