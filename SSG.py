@@ -2088,8 +2088,7 @@ class WatcherUI(tk.Tk):
         container.pack_propagate(False)
         container.pack(side="left")  
 
-        lbl = tk.Label(container, font=("Helvetica", 11, "bold"),
-                       anchor="w")
+        lbl = tk.Label(container, font=("Helvetica", 11, "bold"), anchor="w")
         lbl.full_text = full_text
         lbl.max_pixels = max_pixels
         lbl.current_offset = 0
@@ -2252,9 +2251,11 @@ class WatcherUI(tk.Tk):
                             fg=current_theme['fg'],
                             cursor="hand2",
                             font=("Helvetica", 12, "underline"),
-                            bg=current_theme['button_bg']
+                            bg=current_theme['button_bg'],
+                            wraplength=700,
+                            anchor="w"
                         )
-                        path_lbl.pack(side="top", pady=2)
+                        path_lbl.pack(side="top", pady=1)
                         path_lbl.bind("<Button-1>", lambda e, p=game_folder_path: _open_folder(p))
 
                         self.progress_state = load_progress_state()
@@ -2292,6 +2293,83 @@ class WatcherUI(tk.Tk):
             self.after(100, self._update_mass_close_btn)
 
         self.after(0, _safe_refresh)
+
+    # ------------------------------------------------------------
+    def _confirm_attention(self, html_path: Path):    
+        if hasattr(self, 'active_menu') and self.active_menu:
+            if html_path == self.active_menu_path:
+                self.active_menu.unpost()
+                self.active_menu = None
+                self.active_menu_path = None
+                return
+            else:
+                self.active_menu.unpost()
+    
+        progress_state = load_progress_state()
+        file_progress = progress_state.get(html_path.name, {}).get("percent", 0)
+    
+        if file_progress == 100:
+            menu = tk.Menu(self, tearoff=0)
+            self.active_menu = menu
+            self.active_menu_path = html_path
+        
+            menu.add_command(
+                label="Reprocess HTML", 
+                command=lambda p=html_path: [
+                    (lambda path: [
+                        (temp_file := TEMP_FOLDER / f"{path.name}.txt").unlink(missing_ok=True),
+                        (old_path := OLD_HTML_FOLDER / path.name).exists() and shutil.move(str(old_path), str(path)),
+                        (folder_name := path.stem + "_files"),
+                        (old_folder := OLD_HTML_FOLDER / folder_name).exists() and shutil.move(str(old_folder), str(path.parent))
+                    ])(p),
+                    _download_done.pop(p, None),
+                    progress_state.pop(p.name, None),
+                    save_progress_state(progress_state),
+                    (all_html_files.remove(p) if p in all_html_files else None),
+                    file_status.pop(p, None),
+                    all_html_files.append(p),
+                    file_status.update({p: "waiting"}),
+                    self.after(0, self.refresh_file_list, all_html_files, file_status),
+                    job_tracker.add_job(),
+                    threading.Thread(target=lambda: _run_main_in_thread(p), daemon=True).start(),
+                    menu.unpost()
+                ]
+            )
+            menu.add_command(
+                label="Next Process", 
+                command=lambda: [
+                    messagebox.showinfo("Next Process", "Placeholder for next process"),
+                    menu.unpost()
+                ]
+            )
+        
+            menu.bind("<Unmap>", lambda e: [setattr(self, 'active_menu', None), setattr(self, 'active_menu_path', None)])
+        
+            if widgets := self._row_widgets.get(html_path):
+                btn = widgets.get("attention_btn")
+                if btn and btn.winfo_ismapped():
+                    x = btn.winfo_rootx() + btn.winfo_width()
+                    y = btn.winfo_rooty()
+                    menu.post(x, y)
+            return
+    
+        queued, active = job_tracker.snapshot()
+        in_progress = queued > 0 or active > 0
+    
+        if in_progress:
+            current_files = [p.name for p in all_html_files]
+            if html_path.name in current_files:
+                return
+    
+        if _gui_yes_no(f"Force {html_path.name} to be reporccess.\n Current progress: {file_progress}%"):
+            if html_path not in all_html_files:
+                all_html_files.append(html_path)
+                file_status[html_path] = "waiting"
+        
+            job_tracker.add_job()
+            threading.Thread(target=lambda: _run_main_in_thread(html_path), daemon=True).start()
+        
+            self.after(100, lambda: self.refresh_file_list(all_html_files, file_status))
 
     # ------------------------------------------------------------
     def _confirm_remove_all(self):
