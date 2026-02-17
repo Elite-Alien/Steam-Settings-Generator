@@ -251,11 +251,16 @@ ROOT_DIR = pathlib.Path(__file__).resolve().parent
 APP_URL_TEMPLATE = "https://shared.fastly.steamstatic.com/community_assets/images/apps/{app_id}/"
 APP_FOLDER = pathlib.Path(__file__).resolve().parent / ".app"
 APP_FOLDER.mkdir(parents=True, exist_ok=True)
+#-------------------------------------------------------------
 VERSION_FILE = APP_FOLDER / "version.txt"
 GBE_VERSION_FILE = APP_FOLDER / "gbe.txt"
+GSE_VERSION_FILE = APP_FOLDER / "gse.txt"
+#-------------------------------------------------------------
 LATEST_RELEASE_URL = "https://api.github.com/repos/Elite-Alien/Steam-Settings-Generator/releases/latest"
 RELEASE_URL = "https://api.github.com/repos/Elite-Alien/Steam-Settings-Generator/releases"
 GBE_LATEST_RELEASE_URL = "https://api.github.com/repos/Detanup01/gbe_fork/releases/latest"
+GSE_LATEST_RELEASE_URL = "https://api.github.com/repos/alex47exe/gse_fork/releases/latest"
+#-------------------------------------------------------------
 GBE_FOLDER = APP_FOLDER / "gbe"
 GBE_LINUX = GBE_FOLDER / "Linux"
 GBE_LINUX.mkdir(parents=True, exist_ok=True)
@@ -263,6 +268,15 @@ GBE_WINDOWS = GBE_FOLDER / "Windows"
 GBE_WINDOWS.mkdir(parents=True, exist_ok=True)
 GBE_WINDOWS_CLIENT = GBE_WINDOWS / "client"
 GBE_WINDOWS_CLIENT.mkdir(parents=True, exist_ok=True)
+#-------------------------------------------------------------
+GSE_FOLDER = APP_FOLDER / "gse"
+GSE_LINUX = GSE_FOLDER / "Linux"
+GSE_LINUX.mkdir(parents=True, exist_ok=True)
+GSE_WINDOWS = GSE_FOLDER / "Windows"
+GSE_WINDOWS.mkdir(parents=True, exist_ok=True)
+GSE_WINDOWS_CLIENT = GSE_WINDOWS / "client"
+GSE_WINDOWS_CLIENT.mkdir(parents=True, exist_ok=True)
+#-------------------------------------------------------------
 DOWNLOADS_FOLDER = APP_FOLDER / "downloads"
 DOWNLOADS_FOLDER.mkdir(parents=True, exist_ok=True)
 TEMP_FOLDER = APP_FOLDER / "temp"
@@ -278,115 +292,94 @@ OLD_HTML_FOLDER = TEMP_FOLDER / "old_html"
 OLD_HTML_FOLDER.mkdir(parents=True, exist_ok=True)
 TOOLS_FOLDER = APP_FOLDER / "tools"
 TOOLS_FOLDER.mkdir(parents=True, exist_ok=True)
+GBE_TOOLS_FOLDER = TOOLS_FOLDER / "gbe_tools"
+GBE_TOOLS_FOLDER.mkdir(parents=True, exist_ok=True)
+GSE_TOOLS_FOLDER = TOOLS_FOLDER / "gse_tools"
+GSE_TOOLS_FOLDER.mkdir(parents=True, exist_ok=True)
 USER_CONFIG_FILE = APP_FOLDER / "userconfig.json"
 GENERAL_SETTINGS_FILE = APP_FOLDER / "general_settings.json"
 
 # ----------------------------------------------------------------------
-def check_for_updates(manual=False, gbe=False):
+def check_for_updates(manual=False, target='app'):
     config = {
-        "version_file": VERSION_FILE if not gbe else GBE_VERSION_FILE,
-        "release_url": LATEST_RELEASE_URL if not gbe else GBE_LATEST_RELEASE_URL,
-        "auto_setting": "auto_update" if not gbe else "auto_update_gbe",
-        "asset_patterns": [r"\.zip$"] if not gbe else [r"linux.*\.tar\.bz2$", r"win.*\.7z$"],
-        "success_msg": "Application" if not gbe else "GBE"
+        "app": {
+            "version_file": VERSION_FILE,
+            "release_url": LATEST_RELEASE_URL,
+            "auto_setting": "auto_update",
+            "asset_patterns": [r"\.zip$"],
+            "success_msg": "Application"
+        },
+        "gbe": {
+            "version_file": GBE_VERSION_FILE,
+            "release_url": GBE_LATEST_RELEASE_URL,
+            "auto_setting": "auto_update_gbe",
+            "asset_patterns": [r"linux.*\.tar\.bz2$", r"win.*\.7z$"],
+            "success_msg": "GBE"
+        },
+        "gse": {
+            "version_file": GSE_VERSION_FILE,
+            "release_url": GSE_LATEST_RELEASE_URL,
+            "auto_setting": "auto_update_gse",
+            "asset_patterns": [r"linux.*\.tar\.bz2$", r"win.*\.7z$"],
+            "success_msg": "GSE"
+        }
     }
     
-    if not manual and not GENERAL_SETTINGS.get(config["auto_setting"], True):
+    cfg = config[target]
+
+    if not manual and not GENERAL_SETTINGS.get(cfg["auto_setting"], True):
         return
 
     try:
         current_version = ""
-        if config["version_file"].exists():
-            current_version = config["version_file"].read_text(encoding="utf-8").strip()
+        if cfg["version_file"].exists():
+            current_version = cfg["version_file"].read_text(encoding="utf-8").strip()
             if manual:
-                print(f"Current {config['success_msg']} version: {current_version}")
+                print(f"Current {cfg['success_msg']} version: {current_version}")
 
-        response = requests.get(config["release_url"], timeout=10)
+        response = requests.get(cfg["release_url"], timeout=10)
         response.raise_for_status()
         release_data = response.json()
         latest_tag = release_data["tag_name"]
         
         if manual:
-            print(f"Latest {config['success_msg']} version: {latest_tag}")
+            print(f"Latest {cfg['success_msg']} version: {latest_tag}")
 
         if latest_tag != current_version:
-            msg = f"New {config['success_msg']} version available: {latest_tag}\n Download and install?"
+            msg = f"New {cfg['success_msg']} version available: {latest_tag}\n Download and install?"
             if _gui_yes_no(msg):
                 assets = []
-                patterns = [re.compile(p, re.I) for p in config["asset_patterns"]]
+                patterns = [re.compile(p, re.I) for p in cfg["asset_patterns"]]
                 
                 for asset in release_data.get("assets", []):
                     if any(pattern.search(asset["name"]) for pattern in patterns):
                         assets.append(asset)
 
-                if len(assets) < len(config["asset_patterns"]):
-                    error_msg = f"Missing required assets for {config['success_msg']} update"
+                if len(assets) < len(cfg["asset_patterns"]):
+                    error_msg = f"Missing required assets for {cfg['success_msg']} update"
                     raise Exception(error_msg)
 
-                if not gbe:
-                    zip_asset = next((a for a in assets if a["name"].endswith('.zip')), None)
-                    zip_path = DOWNLOADS_FOLDER / zip_asset["name"]
-                    
-                    response = requests.get(zip_asset["browser_download_url"], stream=True, timeout=30)
-                    response.raise_for_status()
-                    with open(zip_path, "wb") as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                    
-                    with zipfile.ZipFile(zip_path, "r") as zip_ref:
-                        temp_extract = ROOT_DIR / "update_temp"
-                        temp_extract.mkdir(exist_ok=True)
-                        
-                        zip_ref.extractall(temp_extract)
-                        
-                        extracted_folder = next(temp_extract.iterdir())
-                        for item in extracted_folder.iterdir():
-                            dest = ROOT_DIR / item.name
-                            if dest.is_dir():
-                                shutil.rmtree(dest, ignore_errors=True)
-                            elif dest.exists():
-                                dest.unlink()
-                            shutil.move(str(item), str(ROOT_DIR))
-                        
-                        shutil.rmtree(temp_extract, ignore_errors=True)
-
-                    ssg_path = ROOT_DIR / "SSG.py"
-                    if ssg_path.exists() and not sys.platform.startswith("win"):
-                        os.chmod(ssg_path, 0o755)
-
-                    zip_path.unlink(missing_ok=True)
-                    
-                    config["version_file"].write_text(latest_tag, encoding="utf-8")
-                    
-                    if manual:
-                        if global_ui is not None:
-                            def _restart_prompt():
-                                if messagebox.askyesno("Update Complete", "Update installed successfully. Restart now?"):
-                                    restart_application()
-                            global_ui.after(0, _restart_prompt)
-                        else:
-                            if _gui_yes_no("Update installed successfully. Restart now?"):
-                                restart_application()
-                    else:
-                        messagebox.showinfo("Update Complete", "Update installed successfully. The application will now restart.")
-                        restart_application()
-
+                if target == "app":
+                    pass
                 else:
-                    linux_extract = DOWNLOADS_FOLDER / "Linux_Extract"
-                    windows_extract = DOWNLOADS_FOLDER / "Windows_Extract"
+                    target_folder = DOWNLOADS_FOLDER / target
+                    target_folder.mkdir(parents=True, exist_ok=True)
     
                     release_patterns = [r"^emu-linux-release\.tar\.bz2$", r"^emu-win-release\.7z$"]
                     release_assets = [a for a in assets if any(re.fullmatch(p, a["name"], re.I) for p in release_patterns)]
 
                     for asset in release_assets:
-                        dl_path = DOWNLOADS_FOLDER / asset["name"]
+                        dl_path = target_folder / asset["name"]
         
                         response = requests.get(asset["browser_download_url"], stream=True)
                         response.raise_for_status()
                         with open(dl_path, "wb") as f:
                             for chunk in response.iter_content(chunk_size=8192):
                                 f.write(chunk)
-        
+
+                        linux_extract = target_folder / "Linux_Extract"
+                        windows_extract = target_folder / "Windows_Extract"
+
                         try:
                             if "linux" in asset["name"].lower():
                                 if linux_extract.exists():
@@ -395,9 +388,12 @@ def check_for_updates(manual=False, gbe=False):
                 
                                 subprocess.run(["tar", "xjf", str(dl_path), "-C", str(linux_extract)])
 
+                                tools_subdir = GBE_TOOLS_FOLDER if target == "gbe" else GSE_TOOLS_FOLDER
+                                tools_subdir.mkdir(parents=True, exist_ok=True)
                                 for interface_file in linux_extract.rglob("generate_interfaces_x*"):
                                     if interface_file.is_file() and not interface_file.suffix:
-                                        dest = TOOLS_FOLDER / interface_file.name
+                                        dest = tools_subdir / interface_file.name
+                                        bak_file = None
                                         if dest.exists():
                                             bak_file = dest.with_name(dest.name + '.bak')
                                             if bak_file.exists():
@@ -405,6 +401,10 @@ def check_for_updates(manual=False, gbe=False):
                                             dest.rename(bak_file)
                                         dest.unlink(missing_ok=True)
                                         shutil.move(str(interface_file), str(dest))
+                                        if bak_file:
+                                            print(f"Moved {interface_file} to {dest} (Backup: {bak_file})")
+                                        else:
+                                            print(f"Moved {interface_file} to {dest}")
                                         os.chmod(dest, 0o755)
 
                                 for experimental_path in linux_extract.rglob("experimental"):
@@ -412,6 +412,7 @@ def check_for_updates(manual=False, gbe=False):
                                         print(f"Found experimental directory at: {experimental_path}")
                                         for arch in ["x32", "x64"]:
                                             arch_path = experimental_path / arch
+                                            dest_dir = (GBE_LINUX if target == "gbe" else GSE_LINUX) / arch
                                             if arch_path.is_dir():
                                                 print(f"Checking Linux {arch} folder: {arch_path}")
                                                 required_files = {"libsteam_api.so", "steamclient.so"}
@@ -428,19 +429,25 @@ def check_for_updates(manual=False, gbe=False):
                                                 has_all = required_files.issubset(found_files)
                 
                                                 if has_all:
-                                                    dest_dir = GBE_LINUX / arch
+                                                    if target == "gbe":
+                                                        dest_dir = GBE_LINUX / arch
+                                                    else:
+                                                        dest_dir = GSE_LINUX / arch
                                                     print(f"Moving Linux {arch} files to {dest_dir}")
                                                     try:
                                                         dest_dir.mkdir(parents=True, exist_ok=True)
                                                         for src_file in arch_path.iterdir():
                                                             if src_file.is_file():
                                                                 dest_file = dest_dir / src_file.name
+                                                                bak_file = None
                                                                 if dest_file.exists():
                                                                     bak_file = dest_file.with_name(dest_file.name + '.bak')
                                                                     if bak_file.exists():
                                                                         bak_file.unlink()
                                                                     dest_file.rename(bak_file)
                                                                 shutil.move(str(src_file), str(dest_file))
+                                                                backup_info = f" (Backup: {bak_file})" if bak_file else ""
+                                                                print(f"Moved {src_file} to {dest_file}{backup_info}")
                                                         print(f"Successfully moved Linux {arch} files")
                                                     except Exception as e:
                                                         print(f"Error moving files: {e}")
@@ -458,21 +465,28 @@ def check_for_updates(manual=False, gbe=False):
                                 else:
                                     subprocess.run(["7zr", "x", str(dl_path), f"-o{str(windows_extract)}", "-y"])
                 
+                                tools_subdir = GBE_TOOLS_FOLDER if target == "gbe" else GSE_TOOLS_FOLDER
+                                tools_subdir.mkdir(parents=True, exist_ok=True)
                                 for interface_file in windows_extract.rglob("generate_interfaces_x*.exe"):
-                                    dest = TOOLS_FOLDER / interface_file.name
+                                    dest = tools_subdir / interface_file.name
+                                    bak_file = None
                                     if dest.exists():
                                         bak_file = dest.with_name(dest.name + ".bak")
                                         if bak_file.exists():
                                             bak_file.unlink()
                                         dest.rename(bak_file)
                                     shutil.move(str(interface_file), str(dest))
-                                    print(f"Moved {interface_file} to {dest} (Backup: {bak_file})" if dest.exists() else "")
+                                    if bak_file:
+                                        print(f"Moved {interface_file} to {dest} (Backup: {bak_file})")
+                                    else:
+                                        print(f"Moved {interface_file} to {dest}")
 
                                 for experimental_path in windows_extract.rglob("experimental"):
                                     if experimental_path.is_dir():
                                        print(f"Found experimental directory at: {experimental_path}")
                                        for arch in ["x32", "x64"]:
                                            arch_path = experimental_path / arch
+                                           dest_dir = (GBE_WINDOWS if target == "gbe" else GSE_WINDOWS) / arch
                                            if arch_path.is_dir():
                                                print(f"Checking Windows {arch} folder: {arch_path}")
                                                required = {
@@ -492,19 +506,25 @@ def check_for_updates(manual=False, gbe=False):
                                                has_all = set(required).issubset(found_files)
                     
                                                if has_all:
-                                                   dest_dir = GBE_WINDOWS / arch
+                                                   if target == "gbe":
+                                                       dest_dir = GBE_WINDOWS / arch
+                                                   else:
+                                                       dest_dir = GSE_WINDOWS / arch
                                                    print(f"Moving {arch} files to {dest_dir}")
                                                    try:
                                                        dest_dir.mkdir(parents=True, exist_ok=True)
                                                        for src_file in arch_path.iterdir():
                                                            if src_file.is_file():
                                                                dest_file = dest_dir / src_file.name
+                                                               bak_file = None
                                                                if dest_file.exists():
                                                                    bak_file = dest_file.with_name(dest_file.name + '.bak')
                                                                    if bak_file.exists():
                                                                        bak_file.unlink()
                                                                    dest_file.rename(bak_file)
                                                                shutil.move(str(src_file), str(dest_file))
+                                                               backup_info = f" (Backup: {bak_file})" if bak_file else ""
+                                                               print(f"Moved {src_file} to {dest_file}{backup_info}")
                                                        print(f"Successfully moved Windows {arch} files")
                                                    except Exception as e:
                                                        print(f"Error moving files: {e}")
@@ -525,18 +545,29 @@ def check_for_updates(manual=False, gbe=False):
                                         for fname in client_files:
                                             src_file = steamclient_src / fname
                                             if src_file.exists():
-                                                dest_file = GBE_WINDOWS_CLIENT / fname
+                                                if target == "gbe":
+                                                    dest_file = GBE_WINDOWS_CLIENT / fname
+                                                else:
+                                                    dest_file = GSE_WINDOWS_CLIENT / fname
                                                 print(f"Moving client file: {src_file} to {dest_file}")
+                                                bak_file = None
                                                 if dest_file.exists():
                                                     bak_file = dest_file.with_name(dest_file.name + '.bak')
                                                     if bak_file.exists():
                                                         bak_file.unlink()
                                                     dest_file.rename(bak_file)
                                                 shutil.move(str(src_file), str(dest_file))
+                                                if bak_file:
+                                                    print(f"Moved client file: {src_file} to {dest_file} (Backup: {bak_file})")
+                                                else:
+                                                    print(f"Moved client file: {src_file} to {dest_file}")
 
                                         extra_dlls = steamclient_src / "extra_dlls"
                                         if extra_dlls.exists():
-                                            dest_dlls = GBE_WINDOWS_CLIENT / "extra_dlls"
+                                            if target == "gbe":
+                                                dest_dlls = GBE_WINDOWS_CLIENT / "extra_dlls"
+                                            else:
+                                                dest_dlls = GSE_WINDOWS_CLIENT / "extra_dlls"
                                             print(f"Merging extra DLLs from {extra_dlls} to {dest_dlls}")
                                             dest_dlls.mkdir(parents=True, exist_ok=True)
                                             for src_dll in extra_dlls.iterdir():
@@ -555,39 +586,40 @@ def check_for_updates(manual=False, gbe=False):
                                                 pass
                         finally:
                             dl_path.unlink(missing_ok=True)
+                    try:
+                        shutil.rmtree(target_folder, ignore_errors=True)
+                        print(f"Cleaned up {target} temp files")
+                    except Exception as e:
+                        print(f"Error cleaning {target} temp folder: {e}")
 
-                    for folder in [linux_extract, windows_extract]:
-                        if folder.exists():
-                            shutil.rmtree(folder, ignore_errors=True)
-
-                    config["version_file"].write_text(latest_tag, encoding="utf-8")
+                    cfg["version_file"].write_text(latest_tag, encoding="utf-8")
     
                     if manual:
-                        messagebox.showinfo("GBE Update Complete", "GBE files updated!")
+                        messagebox.showinfo(f"{cfg['success_msg']} Update Complete", f"{cfg['success_msg']} files updated!")
             else:
-                print(f"{config['success_msg']} update canceled by user")
+                print(f"{cfg['success_msg']} update canceled by user")
         else:
             if manual:
-                msg = f"You have the latest {config['success_msg']} version"
+                msg = f"You have the latest {cfg['success_msg']} version"
                 if global_ui is not None:
                     def _show_info():
-                        messagebox.showinfo(f"{config['success_msg']} Update Check", msg)
+                        messagebox.showinfo(f"{cfg['success_msg']} Update Check", msg)
                     global_ui.after(0, _show_info)
                 else:
-                    messagebox.showinfo(f"{config['success_msg']} Update Check", msg)
+                    messagebox.showinfo(f"{cfg['success_msg']} Update Check", msg)
             else:
-                print(f"You have the latest {config['success_msg']} version")
+                print(f"You have the latest {cfg['success_msg']} version")
             
     except Exception as e:
-        print(f"⚠️ {config['success_msg']} update failed: {e}")
+        print(f"⚠️ {cfg['success_msg']} update failed: {e}")
         if manual:
-            error_msg = f"Failed to update {config['success_msg']}: {str(e)}"
+            error_msg = f"Failed to update {cfg['success_msg']}: {str(e)}"
             if global_ui is not None:
                 def _show_error():
-                    messagebox.showerror(f"{config['success_msg']} Update Error", error_msg)
+                    messagebox.showerror(f"{cfg['success_msg']} Update Error", error_msg)
                 global_ui.after(0, _show_error)
             else:
-                messagebox.showerror(f"{config['success_msg']} Update Error", error_msg)
+                messagebox.showerror(f"{cfg['success_msg']} Update Error", error_msg)
 
 def restart_application():
     python = sys.executable
@@ -1577,9 +1609,11 @@ class WatcherUI(tk.Tk):
                     fg=theme['fg']
                 )
 
-    def _toggle_auto_update(self, gbe=False):
-        if gbe:
+    def _toggle_auto_update(self, target='app'):
+        if target == 'gbe':
             self.general_settings.set("auto_update_gbe", self.auto_update_gbe_var.get())
+        elif target == 'gse':
+            self.general_settings.set("auto_update_gse", self.auto_update_gse_var.get())
         else:
             self.general_settings.set("auto_update", self.auto_update_var.get())
         
@@ -1594,6 +1628,9 @@ class WatcherUI(tk.Tk):
         self.manual_update_gbe_btn.config(state=tk.DISABLED if auto_update_gbe else tk.NORMAL)
         self.downgrade_gbe_btn.config(state=tk.NORMAL if not auto_update_gbe else tk.DISABLED)
         
+        auto_update_gse = self.general_settings.get("auto_update_gse", True)
+        self.manual_update_gse_btn.config(state=tk.DISABLED if auto_update_gse else tk.NORMAL)
+        self.downgrade_gse_btn.config(state=tk.NORMAL if not auto_update_gse else tk.DISABLED)
 
     def toggle_settings_menu(self):
         if self.settings_frame.winfo_ismapped():
@@ -1628,7 +1665,7 @@ class WatcherUI(tk.Tk):
 
         general_container = Frame(self.general_tab, bg=theme['bg'])
         general_container.pack(pady=10, padx=20, fill="x")
-
+#---------------------------------------------------------------------------------------------------------------------------
         update_frame = Frame(general_container, bg=theme['bg'])
         update_frame.pack(fill="x", pady=5)
         
@@ -1637,7 +1674,7 @@ class WatcherUI(tk.Tk):
             update_frame,
             text="Automatic Update Check",
             variable=self.auto_update_var,
-            command=lambda: self._toggle_auto_update(gbe=False),
+            command=lambda: self._toggle_auto_update(target='app'),
             bg=theme['bg'],
             fg=theme['fg'],
             activebackground=theme['bg'],
@@ -1648,7 +1685,7 @@ class WatcherUI(tk.Tk):
         self.manual_update_btn = Button(
             update_frame,
             text="Manual Update",
-            command=lambda: threading.Thread(target=check_for_updates, args=(True, False), daemon=True).start(),
+            command=lambda: threading.Thread(target=check_for_updates, args=(True, 'app'), daemon=True).start(),
             bg=theme['button_bg'],
             fg=theme['fg'],
             state=tk.NORMAL if not self.auto_update_var.get() else tk.DISABLED
@@ -1664,7 +1701,7 @@ class WatcherUI(tk.Tk):
             state=tk.NORMAL if not self.auto_update_var.get() else tk.DISABLED
         )
         self.downgrade_btn.pack(side="right", padx=10)
-
+#---------------------------------------------------------------------------------------------------------------------------
         gbe_frame = Frame(general_container, bg=theme['bg'])
         gbe_frame.pack(fill="x", pady=5)
     
@@ -1673,7 +1710,7 @@ class WatcherUI(tk.Tk):
             gbe_frame,
             text="Automatic Update GBE",
             variable=self.auto_update_gbe_var,
-            command=lambda: self._toggle_auto_update(gbe=True),
+            command=lambda: self._toggle_auto_update(target='gbe'),
             bg=theme['bg'],
             fg=theme['fg'],
             activebackground=theme['bg'],
@@ -1684,7 +1721,7 @@ class WatcherUI(tk.Tk):
         self.manual_update_gbe_btn = Button(
             gbe_frame,
             text="Manual Update",
-            command=lambda: threading.Thread(target=check_for_updates, args=(True, True), daemon=True).start(),
+            command=lambda: threading.Thread(target=check_for_updates, args=(True, 'gbe'), daemon=True).start(),
             bg=theme['button_bg'],
             fg=theme['fg'],
             state=tk.NORMAL if not self.auto_update_gbe_var.get() else tk.DISABLED
@@ -1700,7 +1737,43 @@ class WatcherUI(tk.Tk):
             state=tk.NORMAL if not self.auto_update_gbe_var.get() else tk.DISABLED
         )
         self.downgrade_gbe_btn.pack(side="right", padx=10)
+#---------------------------------------------------------------------------------------------------------------------------
+        gse_frame = Frame(general_container, bg=theme['bg'])
+        gse_frame.pack(fill="x", pady=5)
+    
+        self.auto_update_gse_var = tk.BooleanVar(value=self.general_settings.get("auto_update_gse", True))
+        Checkbutton(
+            gse_frame,
+            text="Automatic Update GSE",
+            variable=self.auto_update_gse_var,
+            command=lambda: self._toggle_auto_update(target='gse'),
+            bg=theme['bg'],
+            fg=theme['fg'],
+            activebackground=theme['bg'],
+            activeforeground=theme['fg'],
+            selectcolor=theme['widget_bg']
+        ).pack(side="left")
+    
+        self.manual_update_gse_btn = Button(
+            gse_frame,
+            text="Manual Update",
+            command=lambda: threading.Thread(target=check_for_updates, args=(True, 'gse'), daemon=True).start(),
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            state=tk.NORMAL if not self.auto_update_gse_var.get() else tk.DISABLED
+        )
+        self.manual_update_gse_btn.pack(side="right")
 
+        self.downgrade_gse_btn = Button(
+            gse_frame,
+            text="Downgrade",
+            command=lambda: self.downgrader("gse"),
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            state=tk.NORMAL if not self.auto_update_gse_var.get() else tk.DISABLED
+        )
+        self.downgrade_gse_btn.pack(side="right", padx=10)
+#---------------------------------------------------------------------------------------------------------------------------
         self.user_tab = Frame(tablist, bg=theme['bg'])
         tablist.add(self.user_tab, text="User Config")
 
@@ -1881,11 +1954,31 @@ class WatcherUI(tk.Tk):
             except Exception as e:
                 messagebox.showerror("Downgrade Failed", str(e))
 
-        elif target == "gbe":
-            if not _gui_yes_no("Do you want to downgrade GBE files?"):
+        elif target in ["gbe", "gse"]:
+            if not _gui_yes_no(f"Do you want to downgrade {target.upper()} files?"):
                 return
 
-            target_folders = [TOOLS_FOLDER, GBE_FOLDER]
+            if target == "gbe":
+                target_folders = [GBE_TOOLS_FOLDER, GBE_FOLDER]
+            else:
+                target_folders = [GSE_TOOLS_FOLDER, GSE_FOLDER]
+
+            backups_exist = False
+            for folder in target_folders:
+                if folder.exists():
+                    for file_path in folder.rglob('*.bak'):
+                        backups_exist = True
+                        break
+                if backups_exist:
+                    break
+
+            if not backups_exist:
+                messagebox.showinfo("Downgrade", "No backups were located")
+                return
+
+            if not _gui_yes_no(f"Do you want to downgrade {target.upper()} files?"):
+                return
+
             try:
                 for folder in target_folders:
                     if not folder.exists():
@@ -1904,9 +1997,10 @@ class WatcherUI(tk.Tk):
                         except Exception as e:
                             print(f"Error restoring {file_path}: {e}")
 
-                if GBE_VERSION_FILE.exists():
-                    GBE_VERSION_FILE.unlink()
-                messagebox.showinfo("Downgrade Complete", "GBE files restored from backups")
+                version_file = GBE_VERSION_FILE if target == "gbe" else GSE_VERSION_FILE
+                if version_file.exists():
+                    version_file.unlink()                   
+                messagebox.showinfo("Downgrade Complete", f"{target.upper()} files restored from backups")
             except Exception as e:
                 messagebox.showerror("Downgrade Error", f"Failed: {str(e)}")
 
@@ -2667,6 +2761,10 @@ def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Ev
 if __name__ == "__main__":
     if GENERAL_SETTINGS.get("auto_update", True):
         threading.Thread(target=check_for_updates, daemon=True).start()
+    if GENERAL_SETTINGS.get("auto_update_gbe", True):
+        threading.Thread(target=check_for_updates, args=(False, 'gbe'), daemon=True).start()
+    if GENERAL_SETTINGS.get("auto_update_gse", True):
+        threading.Thread(target=check_for_updates, args=(False, 'gse'), daemon=True).start()
 
     if len(sys.argv) > 1 and Path(sys.argv[1]).suffix.lower() == ".html":
         main()
