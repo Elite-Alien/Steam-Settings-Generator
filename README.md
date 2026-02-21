@@ -52,6 +52,7 @@ The GUI is very basic. It's nothing more than a simple window that runs while yo
 
 ## Process Game
 <img width="626" height="51" alt="image" src="https://github.com/user-attachments/assets/c6ae7e7a-6ca5-4c42-8b1c-67efa0a2bcc2" />
+
 You need "tkdnd" for drag and drop, but there is a fallback. If this doesn't work CTRL+C of the executable then focus the application and press CTRL+V and it pastes the executable into the application.
 <img width="762" height="339" alt="image" src="https://github.com/user-attachments/assets/cb86bc2f-b57a-4d6c-b323-bad1236bd934" />
 <img width="729" height="331" alt="image" src="https://github.com/user-attachments/assets/8b15b9f2-73ee-46d4-9661-641ce8df01e2" />
