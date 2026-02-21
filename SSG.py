@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import os, sys, re, json, argparse, difflib, pathlib, requests, shutil, subprocess, threading, queue, time, webbrowser, zipfile
 from collections import defaultdict
-from tkinter import Canvas, Scrollbar, Frame, Label, ttk, Checkbutton, Entry
+from tkinter import Canvas, Scrollbar, Frame, Label, ttk, Checkbutton, Entry, filedialog
 from pathlib import Path
 from collections import OrderedDict
 from urllib.parse import urljoin
@@ -1431,9 +1431,15 @@ GENERAL_SETTINGS = SettingsManager(
     GENERAL_SETTINGS_FILE,
     {
         "auto_update": True,
-        "auto_update_gbe": True
+        "auto_update_gbe": True,
+        "auto_update_gse": True
     }
 )
+
+# ------------------------------------------------------------
+import os
+import subprocess
+from urllib.parse import unquote, urlparse
 
 # ------------------------------------------------------------
 class WatcherUI(tk.Tk):
@@ -2056,6 +2062,17 @@ class WatcherUI(tk.Tk):
         super().__init__()
         self.dark_mode = False
 
+        try:
+            self.tk.eval('package require tkdnd')
+            self.tkdnd_available = True
+        except tk.TclError:
+            self.tk.eval('namespace eval ::tkdnd {}')
+            self.tk.eval('set ::tkdnd::initialized 1')
+            self.tkdnd_available = False
+
+        self._dnd_data = None
+        self._dnd_window = None
+
         self.style = ttk.Style()
         self.style.theme_use('clam')
 
@@ -2158,6 +2175,10 @@ class WatcherUI(tk.Tk):
         self.general_settings = GENERAL_SETTINGS
         self.dark_mode = self.general_settings.get("dark_mode", False)
         self.user_config = USER_SETTINGS
+
+        self._init_game_config()
+        self._dragged_file = None
+        self._drag_start_pos = (0, 0)
 
         self.toggle_theme()
 
@@ -2414,7 +2435,8 @@ class WatcherUI(tk.Tk):
                         (temp_file := TEMP_FOLDER / f"{path.name}.txt").unlink(missing_ok=True),
                         (old_path := OLD_HTML_FOLDER / path.name).exists() and shutil.move(str(old_path), str(path)),
                         (folder_name := path.stem + "_files"),
-                        (old_folder := OLD_HTML_FOLDER / folder_name).exists() and shutil.move(str(old_folder), str(path.parent))
+                        (old_folder := OLD_HTML_FOLDER / folder_name).exists() and shutil.move(str(old_folder), str(path.parent)),
+                        _prompt_handled.pop(p, None)
                     ])(p),
                     _download_done.pop(p, None),
                     progress_state.pop(p.name, None),
@@ -2430,10 +2452,10 @@ class WatcherUI(tk.Tk):
                 ]
             )
             menu.add_command(
-                label="Next Process", 
-                command=lambda: [
-                    messagebox.showinfo("Next Process", "Placeholder for next process"),
-                    menu.unpost()
+                label="Process Game", 
+                command=lambda p=html_path: [
+                    menu.unpost(),
+                    self.toggle_game_config(p)
                 ]
             )
         
@@ -2464,6 +2486,357 @@ class WatcherUI(tk.Tk):
             threading.Thread(target=lambda: _run_main_in_thread(html_path), daemon=True).start()
         
             self.after(100, lambda: self.refresh_file_list(all_html_files, file_status))
+
+    # ------------------------------------------------------------
+    def _init_game_config(self):
+        self.game_config_frame = Frame(self)
+        self.game_config_visible = False
+        self.current_platform = None
+        self.emu_var = None
+        self.drop_label = None
+        self.selected_file = None
+        self.drop_zone_active = False
+        self.last_clipboard_content = ""
+        self.clipboard_check = None
+
+    def toggle_game_config(self, html_path: Path | None = None):
+        if self.game_config_visible:
+            self.game_config_frame.pack_forget()
+            self.settings_btn.config(text="⚙️")
+            self.game_config_visible = False
+            self.selected_file = None
+        else:
+            if html_path:
+                self.current_html_path = html_path
+                self._populate_game_config()
+            self.game_config_frame.pack(fill="both", expand=True)
+            self.settings_btn.config(text="❌")
+            self.game_config_visible = True
+
+    def _populate_game_config(self):
+        for widget in self.game_config_frame.winfo_children():
+            widget.destroy()
+
+        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        self.game_config_frame.config(bg=theme['bg'])
+
+        title = Label(
+            self.game_config_frame, 
+            text="Game Configuration",
+            font=("Helvetica", 16, "bold"),
+            bg=theme['bg'],
+            fg=theme['fg']
+        )
+        title.pack(pady=10)
+
+        self.platform_frame = Frame(self.game_config_frame, bg=theme['bg'])
+        self.platform_frame.pack(pady=10)
+    
+        self.platform_label = Label(
+            self.platform_frame,
+            text="Detected Platform: None",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 12)
+        )
+        self.platform_label.pack()
+
+        emu_frame = Frame(self.game_config_frame, bg=theme['bg'])
+        emu_frame.pack(pady=10)
+    
+        Label(
+            emu_frame, 
+            text="Select Emulator:",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 11)
+        ).pack(side="left", padx=(0, 10))
+    
+        self.emu_var = tk.StringVar()
+        self.emu_dropdown = ttk.Combobox(
+            emu_frame,
+            textvariable=self.emu_var,
+            values=["GBE", "GSE"],
+            cursor="hand2",
+            state="readonly",
+            width=15
+        )
+        self.emu_dropdown.pack(side="left")
+        self.emu_var.set("GBE")
+
+        drop_frame = Frame(self.game_config_frame, bg=theme['bg'])
+        drop_frame.pack(pady=20, fill="both", expand=True, padx=50)
+    
+        self.drop_label = Label(
+            drop_frame,
+            text="Drop A Game Executable Here or Click to Browse",
+            bg=theme['widget_bg'],
+            fg=theme['fg'],
+            height=10,
+            relief="groove",
+            font=("Helvetica", 14),
+            cursor="hand2"
+        )
+        self.drop_label.pack(fill="both", expand=True)
+
+        self.drop_label.bind("<Button-1>", self._browse_exe)
+
+        self.drop_label.bind("<Control-v>", self._handle_clipboard_paste)
+        self.drop_label.focus_set()
+
+        self.tkdnd_available = False
+        try:
+            self.tk.call('package', 'require', 'tkdnd')
+            self.tkdnd_available = True
+        except tk.TclError:
+            print("TkDnD not available, using fallback methods")
+
+        if self.tkdnd_available and self._is_wayland():
+            self.drop_label.bind("<ButtonPress>", self._wayland_dnd_start)
+            self.drop_label.bind("<ButtonRelease>", self._wayland_dnd_stop)
+            self.drop_label.bind("<Motion>", self._wayland_dnd_motion)
+        elif self.tkdnd_available:
+            self.drop_label.bind("<Enter>", self._xdnd_enter)
+            self.drop_label.bind("<Leave>", self._xdnd_leave)
+            self.drop_label.bind("<XdndPosition>", self._xdnd_position)
+            self.drop_label.bind("<XdndDrop>", self._xdnd_drop)
+            self._register_xdnd()
+        else:
+            self.drop_label.bind("<Enter>", lambda e: self.drop_label.config(bg=theme['hover_bg']))
+            self.drop_label.bind("<Leave>", lambda e: self.drop_label.config(bg=theme['widget_bg']))
+
+            if self._is_wayland():
+                self.drop_label.bind("<Motion>", self._wayland_dnd_motion)
+                self.drop_label.bind("<Leave>", self._xdnd_leave)
+
+        btn_frame = Frame(self.game_config_frame, bg=theme['bg'])
+        btn_frame.pack(pady=20)
+    
+        Button(
+            btn_frame,
+            text="Process",
+            command=self._process_game,
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            padx=20
+        ).pack(side="left", padx=10)
+
+        Button(
+            btn_frame,
+            text="Cancel",
+            command=self.toggle_game_config,
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            padx=20
+        ).pack(side="right", padx=10)
+
+    def _is_wayland(self):
+        return "wayland" in os.environ.get("XDG_SESSION_TYPE", "").lower()
+
+    def _register_xdnd(self):
+        self.tk.call('package', 'require', 'xdnd')
+        self.drop_label.tk.call('xdnd', 'bindtarget', self.drop_label._w, 'xdnd')
+        self.drop_label.tk.call('bind', 'xdnd', '<XdndEnter>', self._xdnd_enter)
+        self.drop_label.tk.call('bind', 'xdnd', '<XdndPosition>', self._xdnd_position)
+        self.drop_label.tk.call('bind', 'xdnd', '<XdndDrop>', self._xdnd_drop)
+
+    def _xdnd_enter(self, event):
+        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        self.drop_label.config(bg=theme['hover_bg'])
+        return "copy"
+
+    def _xdnd_position(self, event):
+        return "copy"
+
+    def _xdnd_leave(self, event):
+        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        self.drop_label.config(bg=theme['widget_bg'])
+
+    def _xdnd_drop(self, event):
+        try:
+            data = self.tk.call('selection', 'get', 'XdndSelection')
+            for uri in data.split():
+                if uri.startswith('file://'):
+                    path = unquote(urlparse(uri).path)
+                    if sys.platform.startswith("win"):
+                        path = path.lstrip('/')
+                    self._handle_file(path)
+        except Exception as e:
+            print(f"Xdnd drop error: {e}")
+        return "copy"
+
+    def _handle_clipboard_paste(self, event):
+        try:
+            content = self.clipboard_get()
+            if not content:
+                return
+
+            if content.startswith("x-special/gnome-copied-files"):
+                parts = content.split("\n")
+                if len(parts) > 1:
+                    uris = parts[1:]
+                    for uri in uris:
+                        path = self._uri_to_path(uri)
+                        if path and os.path.exists(path):
+                            self._handle_file(path)
+                            return
+
+            elif content.startswith("file://"):
+                uris = content.split()
+                for uri in uris:
+                    path = self._uri_to_path(uri)
+                    if path and os.path.exists(path):
+                        self._handle_file(path)
+                        return
+
+            if os.path.exists(content):
+                self._handle_file(content)
+        except tk.TclError:
+            pass
+        except Exception as e:
+            print(f"Clipboard paste error: {e}")
+
+    def _uri_to_path(self, uri):
+        try:
+            parsed = urlparse(uri)
+            path = unquote(parsed.path)
+
+            if sys.platform == "win32" and path.startswith("/"):
+                path = path[1:]
+            return path
+        except Exception:
+            return None
+
+    def _wayland_dnd_start(self, event):
+        self._dnd_data = None
+        try:
+            self._dnd_window = self.tk.call('winfo', 'toplevel', self.drop_label._w)
+            self.tk.call('tkdnd', 'dnd', 'bindtarget', self._dnd_window, 'text/uri-list', '<Drop>', self._wayland_drop)
+        except tk.TclError:
+            print("TkDnD not available - using fallback file dialog")
+            self._open_file_dialog()
+
+    def _wayland_dnd_motion(self, event):
+        if self._dnd_window and self._dnd_data:
+            try:
+                self.tk.call('tkdnd', 'dnd', 'motion', self._dnd_window, event.x_root, event.y_root)
+            except tk.TclError:
+                pass
+
+    def _wayland_dnd_stop(self, event):
+        try:
+            if self._dnd_window:
+                self.tk.call('tkdnd', 'dnd', 'cleartarget', self._dnd_window)
+        except tk.TclError:
+            pass
+        finally:
+            self._dnd_window = None
+
+    def _wayland_drop(self, event):
+        if not self.tkdnd_available:
+            return
+    
+        try:
+            mime_types = ['text/uri-list', 'x-special/gnome-copied-files', 'UTF8_STRING']
+            for mime in mime_types:
+                try:
+                    data = self.tk.call('tkdnd', 'dnd', 'getdata', mime)
+                    if not data:
+                        continue
+                
+                    if mime == 'x-special/gnome-copied-files':
+                        lines = data.split('\n')
+                        if lines[0] == 'copy':
+                            uris = lines[1:]
+                        else:
+                            uris = lines
+                    else:
+                        uris = data.split()
+                
+                    for uri in uris:
+                        if uri.startswith('file://'):
+                            try:
+                                path = unquote(urlparse(uri).path)
+                                path = path.replace("%20", " ")
+                                if sys.platform.startswith("win"):
+                                    path = path.lstrip('/')
+                                self._handle_file(path)
+                            except Exception as e:
+                                print(f"Error processing URI {uri}: {e}")
+                    return
+                except tk.TclError:
+                    continue
+            print("Could not process any known MIME types")
+        except Exception as e:
+            print(f"Wayland drop error: {e}")
+        finally:
+            self._wayland_dnd_stop(None)
+
+    def _detect_platform(self, file_path: str):
+        path = Path(file_path)
+        if path.suffix.lower() == '.exe':
+            self.current_platform = 'Windows'
+            self.emu_dropdown['values'] = ['GBE', 'GSE']
+            self.platform_label.config(text=f"Detected Platform: {self.current_platform}")
+            self.emu_var.set('GBE')
+        elif path.suffix.lower() in ('.x86', '.x86_64', '.sh', '.bin', ''):
+            self.current_platform = 'Linux'
+            self.emu_dropdown['values'] = ['GBE', 'GSE']
+            self.platform_label.config(text=f"Detected Platform: {self.current_platform}")
+            self.emu_var.set('GBE')
+        else:
+            self.current_platform = 'Unknown'
+            self.platform_label.config(text="Detected Platform: Unknown - Please select manually")
+            self.emu_dropdown['values'] = ['GBE', 'GSE']
+            self.emu_var.set('GBE')
+    
+    def _browse_exe(self, event=None):
+        file_types = [("Executables", "*.exe *.x86 *.x86_64 *.bin *.sh"), ("All files", "*.*")]
+    
+        try:
+            path = filedialog.askopenfilename(title="Select Game Executable", filetypes=file_types)
+        except Exception as e:
+            print(f"File dialog error: {e}, trying console fallback")
+            path = self._console_file_prompt()
+    
+        if path:
+            self._handle_file(path)
+
+    def _console_file_prompt(self):
+        print("--- Console File Selection ---")
+        print("Please enter the full path to your game executable:")
+        while True:
+            path = input("File path: ").strip()
+            if os.path.exists(path):
+                return path
+            print("File not found. Please try again.")
+
+    def _open_file_dialog(self):
+        file_path = filedialog.askopenfilename(
+        title="Select Game Executable",
+        filetypes=[("Executables", "*.exe *.x86 *.86_64 *.bin *.sh"), ("All files", "*.*")])
+        if file_path:
+            self._handle_file(file_path)
+
+    def _handle_file(self, path):
+        self.selected_file = path
+        self.drop_label.config(text=f"Selected: {Path(path).name}")
+        self._detect_platform(path)
+
+    def _process_game(self):
+        if not self.selected_file:
+            messagebox.showwarning("Error", "Please select a game executable first")
+            return
+
+        if not self.current_platform:
+            messagebox.showwarning("Error", "Could not detect platform from file")
+            return
+    
+        emulator = self.emu_var.get()
+    
+        print(f"Processing {self.selected_file} for {self.current_platform} with {emulator}")
+    
+        self.toggle_game_config()
 
     # ------------------------------------------------------------
     def _confirm_remove_all(self):
