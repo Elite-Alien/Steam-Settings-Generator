@@ -55,6 +55,8 @@ You need "tkdnd" for drag and drop, but there is a fallback. If this doesn't wor
 <img width="762" height="339" alt="image" src="https://github.com/user-attachments/assets/cb86bc2f-b57a-4d6c-b323-bad1236bd934" />
 <img width="729" height="331" alt="image" src="https://github.com/user-attachments/assets/8b15b9f2-73ee-46d4-9661-641ce8df01e2" />
 
+File Exploring is also an option.
+<img width="604" height="321" alt="image" src="https://github.com/user-attachments/assets/32c7ccd5-cded-420e-98dd-aead83e8f074" />
 
 ## How to use in terminal
 1. Go to SteamDB and find your game.
