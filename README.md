@@ -50,6 +50,12 @@ This is currently only in the application and not terminal based yet. Though if 
 
 The GUI is very basic. It's nothing more than a simple window that runs while you save files. Though wih this method you can keep it running and marathon style many games in a matter of minutes. Once your done, close it and it will stop checking for HTML files. Currently the second button, the one left of the trashcan is a place holder. I planned to make it something in the future update, but not sure which to do yet. It may just end up being removed. Because it might not be worth it. So for now it does nothing.
 
+## Process Game
+You need "tkdnd" for drag and drop, but there is a fallback. If this doesn't work CTRL+C of the executable then focus the application and press CTRL+V and it pastes the executable into the application.
+<img width="762" height="339" alt="image" src="https://github.com/user-attachments/assets/cb86bc2f-b57a-4d6c-b323-bad1236bd934" />
+<img width="729" height="331" alt="image" src="https://github.com/user-attachments/assets/8b15b9f2-73ee-46d4-9661-641ce8df01e2" />
+
+
 ## How to use in terminal
 1. Go to SteamDB and find your game.
 2. Save the page as an HTML file anywhere on your PC.
