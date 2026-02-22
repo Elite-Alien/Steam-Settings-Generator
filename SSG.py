@@ -2498,20 +2498,43 @@ class WatcherUI(tk.Tk):
         self.drop_zone_active = False
         self.last_clipboard_content = ""
         self.clipboard_check = None
+        self.processing_step = 1
 
     def toggle_game_config(self, html_path: Path | None = None):
         if self.game_config_visible:
-            self.game_config_frame.pack_forget()
-            self.settings_btn.config(text="⚙️")
-            self.game_config_visible = False
-            self.selected_file = None
+            if self.processing_step == 2:
+                self.processing_step = 1
+                self.selected_file = None
+                self.platform_label.pack()
+                self.emu_label.pack(side="left", padx=(0, 10))
+                self.emu_dropdown.pack(side="left")
+                self.drop_label.config(text="Drop A Game Executable Here or Click to Browse")
+                return
+            else:
+                if self.selected_file is not None:
+                    try:
+                        temp_file = TEMP_FOLDER / f"{self.current_html_path.name}.txt"
+                        if temp_file.exists():
+                            game_dir = None
+                            for line in temp_file.read_text().splitlines():
+                                if line.startswith("GAMEDIR="):
+                                    game_dir = Path(line.split("=", 1)[1].strip())
+                                    break
+                            if game_dir:
+                                self._remove_gpfile(game_dir)
+                    except Exception as e:
+                        print(f"Error cleaning .gpfile on cancel: {e}")
+
+                self.game_config_frame.pack_forget()
+                self.game_config_visible = False
+                self.selected_file = None
         else:
             if html_path:
                 self.current_html_path = html_path
                 self._populate_game_config()
             self.game_config_frame.pack(fill="both", expand=True)
-            self.settings_btn.config(text="❌")
             self.game_config_visible = True
+            self.processing_step = 1
 
     def _populate_game_config(self):
         for widget in self.game_config_frame.winfo_children():
@@ -2529,11 +2552,11 @@ class WatcherUI(tk.Tk):
         )
         title.pack(pady=10)
 
-        self.platform_frame = Frame(self.game_config_frame, bg=theme['bg'])
-        self.platform_frame.pack(pady=10)
+        self.selection_container = Frame(self.game_config_frame, bg=theme['bg'])
+        self.selection_container.pack(pady=10)
     
         self.platform_label = Label(
-            self.platform_frame,
+            self.selection_container,
             text="Detected Platform: None",
             bg=theme['bg'],
             fg=theme['fg'],
@@ -2541,20 +2564,19 @@ class WatcherUI(tk.Tk):
         )
         self.platform_label.pack()
 
-        emu_frame = Frame(self.game_config_frame, bg=theme['bg'])
-        emu_frame.pack(pady=10)
-    
-        Label(
-            emu_frame, 
+        self.emu_frame = Frame(self.selection_container, bg=theme['bg'])
+        self.emu_label = Label(
+            self.emu_frame, 
             text="Select Emulator:",
             bg=theme['bg'],
             fg=theme['fg'],
             font=("Helvetica", 11)
-        ).pack(side="left", padx=(0, 10))
+        )
+        self.emu_label.pack(side="left", padx=(0, 10))
     
         self.emu_var = tk.StringVar()
         self.emu_dropdown = ttk.Combobox(
-            emu_frame,
+            self.emu_frame,
             textvariable=self.emu_var,
             values=["GBE", "GSE"],
             cursor="hand2",
@@ -2563,6 +2585,30 @@ class WatcherUI(tk.Tk):
         )
         self.emu_dropdown.pack(side="left")
         self.emu_var.set("GBE")
+        self.emu_frame.pack()
+
+        self.emu_dropdown.bind("<<ComboboxSelected>>", self._on_emulator_changed)
+
+        self.arch_frame = Frame(self.selection_container, bg=theme['bg'])
+        self.arch_label = Label(
+            self.arch_frame,
+            text="Select Architecture:",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 11)
+        )
+        self.arch_label.pack(side="left", padx=(0, 10))
+
+        self.arch_var = tk.StringVar()
+        self.arch_dropdown = ttk.Combobox(
+            self.arch_frame,
+            textvariable=self.arch_var,
+            values=["32 Bit", "64 Bit"],
+            cursor="hand2",
+            state="readonly",
+            width=15
+        )
+        self.arch_dropdown.pack(side="left")
 
         drop_frame = Frame(self.game_config_frame, bg=theme['bg'])
         drop_frame.pack(pady=20, fill="both", expand=True, padx=50)
@@ -2629,6 +2675,9 @@ class WatcherUI(tk.Tk):
             fg=theme['fg'],
             padx=20
         ).pack(side="right", padx=10)
+
+    def _on_emulator_changed(self, event):
+        self.drop_label.focus_set()
 
     def _is_wayland(self):
         return "wayland" in os.environ.get("XDG_SESSION_TYPE", "").lower()
@@ -2786,7 +2835,7 @@ class WatcherUI(tk.Tk):
             self.emu_var.set('GBE')
         else:
             self.current_platform = 'Unknown'
-            self.platform_label.config(text="Detected Platform: Unknown - Please select manually")
+            self.platform_label.config(text="Detected Platform: Unknown")
             self.emu_dropdown['values'] = ['GBE', 'GSE']
             self.emu_var.set('GBE')
     
@@ -2798,7 +2847,7 @@ class WatcherUI(tk.Tk):
         except Exception as e:
             print(f"File dialog error: {e}, trying console fallback")
             path = self._console_file_prompt()
-    
+
         if path:
             self._handle_file(path)
 
@@ -2812,31 +2861,465 @@ class WatcherUI(tk.Tk):
             print("File not found. Please try again.")
 
     def _open_file_dialog(self):
+        if self.processing_step == 1:
+            filetypes = [("Executables", "*.exe *.x86 *.x86_64 *.bin *.sh"), ("All files", "*.*")]
+        else:
+            if self.current_platform == "Windows":
+                filetypes = [("DLL Files", "*.dll"), ("All files", "*.*")]
+            elif self.current_platform == "Linux":
+                filetypes = [("Shared Objects", "*.so"), ("All files", "*.*")]
+            else:
+                filetypes = [("All files", "*.*")]
+
         file_path = filedialog.askopenfilename(
-        title="Select Game Executable",
-        filetypes=[("Executables", "*.exe *.x86 *.86_64 *.bin *.sh"), ("All files", "*.*")])
+            title="Select File",
+            filetypes=filetypes
+        )
         if file_path:
             self._handle_file(file_path)
 
     def _handle_file(self, path):
-        self.selected_file = path
-        self.drop_label.config(text=f"Selected: {Path(path).name}")
+        self.selected_file = Path(path)
+        self.drop_label.config(text=f"Selected: {self.selected_file.name}")
+
+        current_emulator = self.emu_var.get()
         self._detect_platform(path)
+        self.emu_var.set(current_emulator)
+
+        try:
+            temp_file = TEMP_FOLDER / f"{self.current_html_path.name}.txt"
+            if not temp_file.exists():
+                raise FileNotFoundError("No temp file found")
+
+            game_dir = None
+            for line in temp_file.read_text().splitlines():
+                if line.startswith("GAMEDIR="):
+                    game_dir = Path(line.split("=", 1)[1].strip())
+                    break
+        
+            if game_dir and game_dir.exists():
+                self._update_gpfile(game_dir, self.selected_file)
+            
+                gpfile = game_dir / ".gpfile"
+                if gpfile.exists():
+                    with gpfile.open() as f:
+                        data = {}
+                        for line in f:
+                            if '=' in line:
+                                key, value = line.split('=', 1)
+                                data[key.strip()] = value.strip()
+                    
+                        if 'ARCHITECTURE' not in data and self.selected_file.suffix.lower() in ('.so', '.dll'):
+                            self.platform_label.pack_forget()
+                            self.emu_label.pack_forget()
+                            self.emu_dropdown.pack_forget()
+                            self.arch_frame.pack(pady=10)
+                            self.arch_label.pack(side="left", padx=(0, 10))
+                            self.arch_dropdown.pack(side="left")
+                            self.arch_var.trace_add("write", self._on_architecture_selected)
+            else:
+                raise ValueError("Could not find valid GAMEDIR in temp file")
+            
+        except Exception as e:
+            print(f"Error updating .gpfile: {e}")
+            messagebox.showerror("GPFile Error", f"Could not create configuration:\n {str(e)}")
+
+    def _on_architecture_selected(self, *args):
+        if self.arch_var.get():
+            try:
+                temp_file = TEMP_FOLDER / f"{self.current_html_path.name}.txt"
+                game_dir = Path(temp_file.read_text().split("GAMEDIR=",1)[1].split("\n",1)[0].strip())
+                gpfile = game_dir / ".gpfile"
+            
+                content = []
+                if gpfile.exists():
+                    with gpfile.open('r') as f:
+                        content = f.readlines()
+            
+                arch = 'x86' if self.arch_var.get() == '32 Bit' else 'x86_64'
+                new_entry = f"ARCHITECTURE={arch}"
+            
+            # Ensure the entry doesn't already exist
+                content = [line for line in content if not line.startswith("ARCHITECTURE=")]
+            
+                if content and not content[-1].endswith('\n'):
+                    content.append('\n')
+                content.append(f"{new_entry}\n")
+            
+                with gpfile.open('w') as f:
+                    f.writelines(content)
+            
+                self.processing_step = 2
+            
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save architecture: {str(e)}")
+
+    def _generate_interface_file(self, game_dir: Path, gp_data: dict):
+        try:
+            library_path = Path(gp_data["LBP_PATH"])
+            is_windows = library_path.suffix.lower() == '.dll'
+            is_linux = library_path.suffix.lower() == '.so'
+        
+            if not (is_windows or is_linux):
+                raise ValueError("Unsupported library type - must be .dll or .so")
+
+            architecture = gp_data.get("ARCHITECTURE", "")
+            tool_suffix = "x32" if architecture == "x86" else "x64"
+            emulator = self.selected_emulator.lower()
+            tools_dir = APP_FOLDER / "tools" / f"{emulator}_tools"
+
+            if is_windows:
+                tool_name = f"generate_interfaces_{tool_suffix}.exe"
+                tool_path = tools_dir / tool_name
+                if sys.platform.startswith("win"):
+                    cmd = [str(tool_path), str(library_path)]
+                else:
+                    cmd = ["wine", str(tool_path), str(library_path)]
+            else:
+                tool_name = f"generate_interfaces_{tool_suffix}"
+                tool_path = tools_dir / tool_name
+                cmd = [str(tool_path), str(library_path)]
+
+            steam_settings = game_dir / "steam_settings"
+            steam_settings.mkdir(exist_ok=True)
+
+            startupinfo = None
+            if sys.platform.startswith("win"):
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = 0
+
+            subprocess.run(
+                cmd,
+                cwd=str(steam_settings),
+                startupinfo=startupinfo,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True
+            )
+
+            print(f"Successfully generated interface file for {library_path.name}")
+            return True
+    
+        except subprocess.CalledProcessError as e:
+            print(f"Interface generation failed: {e}")
+            messagebox.showerror("Error", f"Failed to generate interface file: {e}")
+        except Exception as e:
+            print(f"Unexpected error during interface generation: {e}")
+            messagebox.showerror("Error", f"Unexpected error: {e}")
+    
+        return False
+
+    def _update_cold_loader_ini(self, game_dir: Path, exe_path: Path, appid: str):
+        cold_loader_path = game_dir / "ColdClientLoader.ini"
+        if not cold_loader_path.exists():
+            return
+  
+        try:
+            exe_str = str(exe_path)
+            patterns = ["SteamLibrary", "steamapps", "common"]
+
+            start_index = 0
+            for pattern in patterns:
+                idx = exe_str.find(pattern)
+                if idx != -1:
+                    start_index = idx + len(pattern) + 1
+
+            relative_exe = exe_str[start_index:]
+            parts = relative_exe.split(os.sep)
+            if len(parts) > 1:
+                relative_exe = os.sep.join(parts[1:])
+
+            relative_exe = relative_exe.replace("/", "\\")
+
+            lines = []
+            with open(cold_loader_path, "r") as f:
+                for line in f:
+                    if line.startswith("Exe="):
+                        lines.append(f"Exe={relative_exe}\n")
+                    elif line.startswith("AppId="):
+                        lines.append(f"AppId={appid}\n")
+                    else:
+                        lines.append(line)
+
+            with open(cold_loader_path, "w") as f:
+                f.writelines(lines)
+
+            print(f"Updated ColdClientLoader.ini with Exe={relative_exe} and AppId={appid}")
+
+        except Exception as e:
+            print(f"Error updating ColdClientLoader.ini: {e}")
 
     def _process_game(self):
-        if not self.selected_file:
-            messagebox.showwarning("Error", "Please select a game executable first")
-            return
+        if self.processing_step == 1:
+            if not self.selected_file:
+                messagebox.showwarning("Error", "Please select a game executable first")
+                return
 
-        if not self.current_platform:
-            messagebox.showwarning("Error", "Could not detect platform from file")
-            return
+            try:
+                self.selected_emulator = self.emu_var.get()
+                self.platform_label.pack_forget()
+                self.emu_label.pack_forget()
+                self.emu_dropdown.pack_forget()
+
+                temp_file = TEMP_FOLDER / f"{self.current_html_path.name}.txt"
+                if not temp_file.exists():
+                    raise FileNotFoundError("No temp file found")
+
+                game_dir = None
+                for line in temp_file.read_text().splitlines():
+                    if line.startswith("GAMEDIR="):
+                        game_dir = Path(line.split("=", 1)[1].strip())
+                        break
+     
+                if game_dir:
+                    self._update_gpfile(game_dir, self.selected_file)
+
+                gpfile = game_dir / ".gpfile"
+                with gpfile.open() as f:
+                    platform = next(line.split("=",1)[1].strip() for line in f if line.startswith("PLATFORM="))
+
+                if platform == "Windows":
+                    new_text = "Drop or select a steam_api.dll"
+                elif platform == "Linux":
+                    new_text = "Drop or select a libsteam_api.so"
+            
+                self.drop_label.config(text=new_text)
+                self.processing_step = 2
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Initial setup failed: {str(e)}")
+
+        elif self.processing_step == 2:
+            try:
+                temp_file = TEMP_FOLDER / f"{self.current_html_path.name}.txt"
+                game_dir = Path(temp_file.read_text().split("GAMEDIR=",1)[1].split("\n",1)[0].strip())
+                gpfile = game_dir / ".gpfile"
+
+                gp_data = {}
+                platform = None
+                existing_arch = None
+                if gpfile.exists():
+                    with gpfile.open() as f:
+                        for line in f:
+                            if '=' in line:
+                                key, value = line.strip().split('=', 1)
+                                gp_data[key] = value
+                                if key == "PLATFORM":
+                                    platform = value
+                                if key == "ARCHITECTURE":
+                                    existing_arch = value
+
+                arch = None
+                if platform == "Linux" and not existing_arch:
+                    arch = self._detect_architecture(self.selected_file)
+            
+                    if not arch:
+                        if not self.arch_var.get():
+                            self.arch_frame.pack(pady=10)
+                            self.arch_label.pack(side="left", padx=(0, 10))
+                            self.arch_dropdown.pack(side="left")
+                            return
+                        else:
+                            arch = 'x86' if self.arch_var.get() == '32 Bit' else 'x86_64'
+
+                if arch and not existing_arch:
+                    content = []
+                    if gpfile.exists():
+                        with gpfile.open('r') as f:
+                            content = f.readlines()
+
+                    content = [line for line in content if not line.startswith("ARCHITECTURE=")]
+            
+                    arch_value = arch if arch else ('x86' if self.arch_var.get() == '32 Bit' else 'x86_64')
+                    if content and not content[-1].endswith('\n'):
+                        content.append('\n')
+                    content.append(f"ARCHITECTURE={arch_value}\n")
+
+                    with gpfile.open('w') as f:
+                        f.writelines(content)
+
+                    gp_data["ARCHITECTURE"] = arch
+
+                arch_value = existing_arch or arch
+                if not arch_value:
+                    arch_value = 'x86' if self.arch_var.get() == '32 Bit' else 'x86_64'
+
+                arch_dir = "x32" if arch_value in ["x86", "32"] else "x64"
+                emulator = self.selected_emulator.lower()
+                base_dir = APP_FOLDER / emulator
+
+                success = self._generate_interface_file(game_dir, gp_data)
+                if not success:
+                    return
+
+                if platform == "Windows":
+                    api_file = self.selected_file
+                    api_dir = api_file.parent
+
+                    win_files = ["steam_api.dll", "steam_api64.dll", "steamclient.dll", "steamclient64.dll"]
+                    for file_name in win_files:
+                        file_path = api_dir / file_name
+                        if file_path.exists():
+                            bak_path = file_path.with_suffix(".dll.bak")
+                            if bak_path.exists():
+                                bak_path.unlink()
+                            file_path.rename(bak_path)
+                            print(f"Backed up {file_name} to {bak_path.name}")
+
+                    src_dir = base_dir / "Windows" / arch_dir
+                    for item in src_dir.iterdir():
+                        if item.is_file() and not item.name.endswith('.bak'):
+                            dest = api_dir / item.name
+                            shutil.copy2(item, dest)
+                            print(f"Copied {item.name} to {api_dir}")
+
+                    loader_suffix = "x64" if arch_value.lower() in ("x86_64", "64") else "x32"
+                    client_src = base_dir / "Windows" / "client"
+                    for item in client_src.iterdir():
+                        if item.is_file() and not item.name.endswith('.bak'):
+                            if "steamclient_loader" in item.name:
+                                if f"_{loader_suffix}" in item.name:
+                                    dest = game_dir / item.name
+                                    shutil.copy2(item, dest)
+                            else:
+                                dest = game_dir / item.name
+                                shutil.copy2(item, dest)
+
+                    extra_dlls_src = client_src / "extra_dlls"
+                    if extra_dlls_src.exists():
+                        extra_dlls_dest = game_dir / "extra_dlls"
+                        extra_dlls_dest.mkdir(exist_ok=True)
+                        for dll in extra_dlls_src.glob("*.dll"):
+                            if not dll.name.endswith('.bak'):
+                                shutil.copy2(dll, extra_dlls_dest)
+
+                    try:
+                        temp_file = TEMP_FOLDER / f"{self.current_html_path.name}.txt"
+                        appid = None
+                        if temp_file.exists():
+                            for line in temp_file.read_text().splitlines():
+                                if line.startswith("appid="):
+                                    appid = line.split("=",1)[1].strip()
+                                    break
+        
+                        if appid:
+                            gpfile = game_dir / ".gpfile"
+                            exe_path = None
+                            if gpfile.exists():
+                                for line in gpfile.read_text().splitlines():
+                                    if line.startswith("EXE_PATH="):
+                                        exe_path = Path(line.split("=",1)[1].strip())
+                                        break
+            
+                            if exe_path and exe_path.exists():
+                                self._update_cold_loader_ini(game_dir, exe_path, appid)
+                    except Exception as e:
+                        print(f"Error preparing ColdClientLoader update: {e}")
+
+                elif platform == "Linux":
+                    lbp_path = Path(gp_data["LBP_PATH"])
+                    lib_dir = lbp_path.parent
+
+                    linux_files = ["libsteam_api.so", "steamclient.so"]
+                    for file_name in linux_files:
+                        file_path = lib_dir / file_name
+                        if file_path.exists():
+                            bak_path = file_path.with_suffix(".so.bak")
+                            if bak_path.exists():
+                                bak_path.unlink()
+                            file_path.rename(bak_path)
+                            print(f"Backed up {file_name} to {bak_path.name}")
+
+                    src_dir = base_dir / "Linux" / arch_dir
+                    for item in src_dir.iterdir():
+                        if item.is_file() and not item.name.endswith('.bak'):
+                            dest = lib_dir / item.name
+                            shutil.copy2(item, dest)
+                            print(f"Copied {item.name} to {lib_dir}")
+
+                messagebox.showinfo("Success", f"{emulator.upper()} files installed")
+
+                self.game_config_frame.pack_forget()
+                self.processing_step = 0
+                self.selected_file = None
+                self.current_html_path = None
+                self.arch_frame.pack_forget()
+
+            except Exception as e:
+                messagebox.showerror("Error", f"Installation failed: {str(e)}")
+
+    def _update_gpfile(self, game_dir: Path, exe_path: Path):
+        gpfile = game_dir / ".gpfile"
+
+        data = {}    
+        if gpfile.exists():
+            try:
+                with gpfile.open() as f:
+                    for line in f:
+                        if '=' in line:
+                            key, value = line.split('=', 1)
+                            data[key.strip()] = value.strip()
+            except Exception as e:
+                print(f"Error reading .gpfile: {e}")
+
+        if not hasattr(self, 'original_architecture'):
+            self.original_architecture = data.get('ARCHITECTURE')
+
+        if self.processing_step == 1:
+            data["EXE_PATH"] = str(exe_path.resolve())
+            data["EXE_NAME"] = exe_path.name
+        elif self.processing_step == 2:
+            data["LBP_PATH"] = str(exe_path.resolve())
+            data["LBP_NAME"] = exe_path.name
+
+        if self.processing_step == 1:
+            data["PLATFORM"] = self.current_platform
     
-        emulator = self.emu_var.get()
-    
-        print(f"Processing {self.selected_file} for {self.current_platform} with {emulator}")
-    
-        self.toggle_game_config()
+        arch = self._detect_architecture(exe_path)
+        if arch:
+            data["ARCHITECTURE"] = arch
+
+        content = "\n".join([f"{key}={value}" for key, value in data.items()])
+        try:
+            gpfile.write_text(content, encoding="utf-8")
+            print(f"Updated .gpfile at {gpfile}")
+        except Exception as e:
+            print(f"Error writing .gpfile: {e}")
+            raise
+
+    def _detect_architecture(self, exe_path: Path) -> str | None:
+        path = exe_path.resolve()
+        path_str = str(path).lower()
+        name = path.name.lower()
+
+        if path.suffix == '.dll':
+            if '64' in name or 'x64' in name:
+                return 'x86_64'
+            if '32' in name or 'x86' in name or 'x32' in name:
+                return 'x86'
+
+        if path.suffix == '.so' or path.suffix == '':
+            for parent in path.parents:
+                parent_str = parent.name.lower()
+                if any(kw in parent_str for kw in ["x86_64", "64", "lib64", "amd64"]):
+                    return 'x86_64'
+                if any(kw in parent_str for kw in ["x86", "32", "lib32", "i386"]):
+                    return 'x86'
+
+        if ".x86_64" in path_str or ".x64" in path_str:
+            return "x86_64"
+        if ".x86" in path_str or ".x32" in path_str:
+            return "x86"
+
+        for parent in path.parents:
+            parent_str = parent.name.lower()
+            if "x86_64" in parent_str or "64" in parent_str:
+                return "x86_64"
+            if "x86" in parent_str or "32" in parent_str:
+                return "x86"
+
+        return None
 
     # ------------------------------------------------------------
     def _confirm_remove_all(self):
@@ -3184,7 +3667,7 @@ if __name__ == "__main__":
         watcher_thread.start()
 
     if not VERSION_FILE.exists():
-        VERSION_FILE.write_text("v0.3", encoding="utf-8")
+        VERSION_FILE.write_text("v0.4", encoding="utf-8")
     
     DOWNLOADS_FOLDER.mkdir(parents=True, exist_ok=True)
 
