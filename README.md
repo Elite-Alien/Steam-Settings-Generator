@@ -19,6 +19,11 @@ If you have any files like the "configs.overlay.ini", "sounds" (folder), "fonts"
 6. Click the Directory Path link on the application or Navigate to the Games folder near SSG.py.
 7. Done.
 
+### Settings Menu
+This is currently only in the application and not terminal based yet. Though if you want this to create you a "configs.user.ini" for your games. Click "Enable User Config" inside of the settings menu. Enter in all your desired information and it will create the "configs.user.ini" for you with the information you entered. Now each and every game will have this file placed inside the "steam_settings" folder.
+
+<img width="797" height="483" alt="image" src="https://github.com/user-attachments/assets/21b85cb4-a08a-4256-8599-67cefcc98ae3" />
+
 ## Existing Files at 0% with the GUI
 1. Press the "Attention Button" on the 0% game entry.
 2. Follow the prompts.
@@ -43,11 +48,6 @@ If you have any files like the "configs.overlay.ini", "sounds" (folder), "fonts"
 3. Done.
 <img width="77" height="52" alt="image" src="https://github.com/user-attachments/assets/1e508758-b620-43e5-888e-9b142345f586" />
 
-### Settings Menu
-This is currently only in the application and not terminal based yet. Though if you want this to create you a "configs.user.ini" for your games. Click "Enable User Config" inside of the settings menu. Enter in all your desired information and it will create the "configs.user.ini" for you with the information you entered. Now each and every game will have this file placed inside the "steam_settings" folder.
-
-<img width="797" height="483" alt="image" src="https://github.com/user-attachments/assets/21b85cb4-a08a-4256-8599-67cefcc98ae3" />
-
 ## Process Game
 <img width="626" height="51" alt="image" src="https://github.com/user-attachments/assets/c6ae7e7a-6ca5-4c42-8b1c-67efa0a2bcc2" />
 
@@ -56,6 +56,7 @@ You need "tkdnd" for drag and drop, but there is a fallback. If this doesn't wor
 <img width="729" height="331" alt="image" src="https://github.com/user-attachments/assets/8b15b9f2-73ee-46d4-9661-641ce8df01e2" />
 
 File Exploring is also an option.
+
 <img width="604" height="321" alt="image" src="https://github.com/user-attachments/assets/32c7ccd5-cded-420e-98dd-aead83e8f074" />
 
 ## How to use in terminal
