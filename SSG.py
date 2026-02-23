@@ -1233,39 +1233,60 @@ def main():
             ini_path = steam_settings / "configs.app.ini"
         
             if dlc_txt_path.exists() and ini_path.exists():
-                return
-            
-            dlc_info = OrderedDict()
-            dlc_rows = soup.find_all('tr', attrs={'data-appid': True})
-            for row in dlc_rows:
-                appid = row.get('data-appid')
-                if appid and appid.isdigit():
-                    title_cell = row.find_all('td')[1] if len(row.find_all('td')) > 1 else None
-                    if title_cell:
-                        title = title_cell.get_text(strip=True)
-                        dlc_info[int(appid)] = title
-
-            dlc_info = dict(sorted(dlc_info.items()))
-        
-            if dlc_info:
-                dlc_txt_path = steam_settings / "DLC.txt"
-                with dlc_txt_path.open("w", encoding="utf-8") as f:
-                    for dlc_id, title in dlc_info.items():
-                        f.write(f"{dlc_id}={title}\n")
-            
-                ini_path = steam_settings / "configs.app.ini"
-                with ini_path.open("w", encoding="utf-8") as f:
-                    f.write("[app::dlcs]\n")
-                    f.write("unlock_all=1\n")
-                    for dlc_id, title in dlc_info.items():
-                        f.write(f"{dlc_id}={title}\n")
-                    
-                print(f"DLC.txt and configs.app.ini written in {steam_settings}")
+                print("DLC files already exist - skipping DLC processing")
             else:
-                print("No DLC entries found, skipping DLC file creation.")
+                dlc_info = OrderedDict()
+                dlc_rows = soup.find_all('tr', attrs={'data-appid': True})
+                for row in dlc_rows:
+                    appid = row.get('data-appid')
+                    if appid and appid.isdigit():
+                        title_cell = row.find_all('td')[1] if len(row.find_all('td')) > 1 else None
+                        if title_cell:
+                            title = title_cell.get_text(strip=True)
+                            dlc_info[int(appid)] = title
+
+                dlc_info = dict(sorted(dlc_info.items()))
+        
+                if dlc_info:
+                    dlc_txt_path = steam_settings / "DLC.txt"
+                    with dlc_txt_path.open("w", encoding="utf-8") as f:
+                        for dlc_id, title in dlc_info.items():
+                            f.write(f"{dlc_id}={title}\n")
+            
+                    ini_path = steam_settings / "configs.app.ini"
+                    with ini_path.open("w", encoding="utf-8") as f:
+                        f.write("[app::dlcs]\n")
+                        f.write("unlock_all=1\n")
+                        for dlc_id, title in dlc_info.items():
+                            f.write(f"{dlc_id}={title}\n")
+                    
+                    print(f"DLC.txt and configs.app.ini written in {steam_settings}")
+                else:
+                    print("No DLC entries found, skipping DLC file creation.")
             
         except Exception as e:
             print(f"⚠️ Error during DLC processing: {e}")
+
+        try:
+            depot_rows = soup.find_all('tr', class_='depot')
+            depot_ids = set()
+            for row in depot_rows:
+                depot_id = row.get('data-depotid')
+                if depot_id and depot_id.strip():
+                    depot_ids.add(depot_id.strip())
+
+            if depot_ids:
+                depots_path = steam_settings / "depots.txt"
+                with depots_path.open("w", encoding="utf-8") as f:
+                    for depot in sorted(depot_ids, key=int):
+                        f.write(f"{depot}\n")
+
+                print(f"depots.txt written in {steam_settings}")
+            else:
+                print("No Depot entries found, skipping Depot file creation.")
+
+        except Exception as e:
+            print(f"⚠️ Error during depot processing: {e}")
 
     update_progress(95, html_path)
  
@@ -2939,7 +2960,6 @@ class WatcherUI(tk.Tk):
                 arch = 'x86' if self.arch_var.get() == '32 Bit' else 'x86_64'
                 new_entry = f"ARCHITECTURE={arch}"
             
-            # Ensure the entry doesn't already exist
                 content = [line for line in content if not line.startswith("ARCHITECTURE=")]
             
                 if content and not content[-1].endswith('\n'):
