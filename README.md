@@ -10,11 +10,6 @@ This script is basically those two combined but slightly altered in some areas. 
 ### Extra Folder
 If you have any files like the "configs.overlay.ini", "sounds" (folder), "fonts" (folder), or other files this script does not make those or download sounds for you. It does make a "configs.user.ini" but that is based on your entries in the application currently via settings. Place all desired files inside the Extra folder located in the folder where SSG.py is at. Every time you run SSG.py it will copy those files into the "steam_settings" folder for each game.
 
-### Settings Menu
-This is currently only in the application and not terminal based yet. Though if you want this to create you a "configs.user.ini" for your games. Click "Enable User Config" inside of the settings menu. Enter in all your desired information and it will create the "configs.user.ini" for you with the information you entered. Now each and every game will have this file placed inside the "steam_settings" folder.
-
-<img width="797" height="483" alt="image" src="https://github.com/user-attachments/assets/21b85cb4-a08a-4256-8599-67cefcc98ae3" />
-
 ## How to use as executable
 1. Make sure the application is executable. chmod +x or prompts in your GUI for your DE/WM/Compositor.
 2. Go to SteamDB and find your game.
@@ -48,7 +43,10 @@ This is currently only in the application and not terminal based yet. Though if 
 3. Done.
 <img width="77" height="52" alt="image" src="https://github.com/user-attachments/assets/1e508758-b620-43e5-888e-9b142345f586" />
 
-The GUI is very basic. It's nothing more than a simple window that runs while you save files. Though wih this method you can keep it running and marathon style many games in a matter of minutes. Once your done, close it and it will stop checking for HTML files. Currently the second button, the one left of the trashcan is a place holder. I planned to make it something in the future update, but not sure which to do yet. It may just end up being removed. Because it might not be worth it. So for now it does nothing.
+### Settings Menu
+This is currently only in the application and not terminal based yet. Though if you want this to create you a "configs.user.ini" for your games. Click "Enable User Config" inside of the settings menu. Enter in all your desired information and it will create the "configs.user.ini" for you with the information you entered. Now each and every game will have this file placed inside the "steam_settings" folder.
+
+<img width="797" height="483" alt="image" src="https://github.com/user-attachments/assets/21b85cb4-a08a-4256-8599-67cefcc98ae3" />
 
 ## Process Game
 <img width="626" height="51" alt="image" src="https://github.com/user-attachments/assets/c6ae7e7a-6ca5-4c42-8b1c-67efa0a2bcc2" />
