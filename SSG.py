@@ -3326,6 +3326,8 @@ class WatcherUI(tk.Tk):
                 elif platform == "Linux":
                     lbp_path = Path(gp_data["LBP_PATH"])
                     lib_dir = lbp_path.parent
+                    steam_settings_src = game_dir / "steam_settings"
+                    dest_steam_settings = lbp_path.parent / "steam_settings"
 
                     linux_files = ["libsteam_api.so", "steamclient.so"]
                     for file_name in linux_files:
@@ -3336,6 +3338,21 @@ class WatcherUI(tk.Tk):
                                 bak_path.unlink()
                             file_path.rename(bak_path)
                             print(f"Backed up {file_name} to {bak_path.name}")
+
+                    if dest_steam_settings.exists():
+                        bak_dir = dest_steam_settings.with_name(dest_steam_settings.name + ".bak")
+
+                        if bak_dir.is_dir():
+                            shutil.rmtree(bak_dir, ignore_errors=True)
+                        else:
+                            bak_dir.unlink(missing_ok=True)
+
+                        dest_steam_settings.rename(bak_dir)
+                        print(f"Backed up existing steam_settings → {bak_dir.name}")
+
+                    if steam_settings_src.is_dir():
+                        shutil.copytree(steam_settings_src, dest_steam_settings, dirs_exist_ok=True)
+                        print(f"Copied whole steam_settings folder to {dest_steam_settings}")
 
                     src_dir = base_dir / "Linux" / arch_dir
                     for item in src_dir.iterdir():
@@ -3398,6 +3415,12 @@ class WatcherUI(tk.Tk):
         path = exe_path.resolve()
         path_str = str(path).lower()
         name = path.name.lower()
+
+        if name in ("steam_api.dll", "steamclient.dll"):
+            return "x86"
+
+        if name in ("steam_api64.dll", "steamclient64.dll"):
+            return "x86_64"
 
         if path.suffix == '.dll':
             if '64' in name or 'x64' in name:
@@ -3773,7 +3796,7 @@ if __name__ == "__main__":
         watcher_thread.start()
 
     if not VERSION_FILE.exists():
-        VERSION_FILE.write_text("v0.4", encoding="utf-8")
+        VERSION_FILE.write_text("v0.5", encoding="utf-8")
     
     DOWNLOADS_FOLDER.mkdir(parents=True, exist_ok=True)
 
