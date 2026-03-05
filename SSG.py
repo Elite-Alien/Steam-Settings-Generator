@@ -562,6 +562,41 @@ def check_for_updates(manual=False, target='app'):
                                                 else:
                                                     print(f"Moved client file: {src_file} to {dest_file}")
 
+                                        old_lib_candidates = list(windows_extract.rglob("steam_old_lib"))
+                                        if not old_lib_candidates:
+                                            print("No steam_old_lib folder found under", windows_extract)
+                                        else:
+                                            for old_lib_path in old_lib_candidates:
+                                                print(f"Found steam_old_lib at: {old_lib_path}")
+
+                                                old_target = (GBE_WINDOWS if target == "gbe" else GSE_WINDOWS) / "old"
+                                                moved_any = False
+
+                                                for file in old_lib_path.iterdir():
+                                                    if not file.is_file() or file.suffix.lower() != ".dll":
+                                                        continue
+
+                                                    dest_file = old_target / file.name
+                                                    if dest_file.exists():
+                                                        bak = dest_file.with_name(dest_file.name + ".bak")
+                                                        if bak.exists():
+                                                            bak.unlink()
+                                                        dest_file.rename(bak)
+                                                        print(f"Backed‑up {dest_file.name} → {bak.name}")
+
+                                                    old_target.mkdir(parents=True, exist_ok=True)
+                                                    shutil.move(str(file), str(dest_file))
+                                                    print(f"Moved {file.name} → {dest_file}")
+                                                    moved_any = True
+
+                                                if not moved_any:
+                                                    print(f"steam_old_lib folder {old_lib_path} contained no .dll files")
+                                                try:
+                                                    shutil.rmtree(old_lib_path, ignore_errors=True)
+                                                    print(f"Removed empty steam_old_lib folder {old_lib_path}")
+                                                except Exception as e:
+                                                    print(f"Error cleaning steam_old_lib folder {old_lib_path}: {e}")
+
                                         extra_dlls = steamclient_src / "extra_dlls"
                                         if extra_dlls.exists():
                                             if target == "gbe":
@@ -584,6 +619,7 @@ def check_for_updates(manual=False, target='app'):
                                                 extra_dlls.rmdir()
                                             except OSError:
                                                 pass
+
                         finally:
                             dl_path.unlink(missing_ok=True)
                     try:
@@ -2552,7 +2588,7 @@ class WatcherUI(tk.Tk):
         else:
             if html_path:
                 self.current_html_path = html_path
-                self._populate_game_config()
+            self._populate_game_config()
             self.game_config_frame.pack(fill="both", expand=True)
             self.game_config_visible = True
             self.processing_step = 1
@@ -3174,25 +3210,75 @@ class WatcherUI(tk.Tk):
                     return
 
                 if platform == "Windows":
+                    selected_arch = arch_value
                     api_file = self.selected_file
                     api_dir = api_file.parent
 
-                    win_files = ["steam_api.dll", "steam_api64.dll", "steamclient.dll", "steamclient64.dll"]
-                    for file_name in win_files:
-                        file_path = api_dir / file_name
-                        if file_path.exists():
-                            bak_path = file_path.with_suffix(".dll.bak")
-                            if bak_path.exists():
-                                bak_path.unlink()
-                            file_path.rename(bak_path)
-                            print(f"Backed up {file_name} to {bak_path.name}")
+                    opposite_arch = "x86_64" if selected_arch == "x86" else "x86"
+                    selected_dir   = "x64" if selected_arch == "x86_64" else "x32"
+                    opposite_dir   = "x64" if opposite_arch == "x86_64" else "x32"
+                    steam_api_sel   = "steam_api64.dll" if selected_arch == "x86_64" else "steam_api.dll"
+                    steamclient_sel = "steamclient64.dll" if selected_arch == "x86_64" else "steamclient.dll"
+                    steam_api_opp   = "steam_api64.dll" if opposite_arch == "x86_64" else "steam_api.dll"
+                    steamclient_opp = "steamclient64.dll" if opposite_arch == "x86_64" else "steamclient.dll"
 
-                    src_dir = base_dir / "Windows" / arch_dir
-                    for item in src_dir.iterdir():
-                        if item.is_file() and not item.name.endswith('.bak'):
-                            dest = api_dir / item.name
-                            shutil.copy2(item, dest)
-                            print(f"Copied {item.name} to {api_dir}")
+                    src_dir_sel = base_dir / "Windows" / selected_dir
+                    for dll_name in (steam_api_sel, steamclient_sel):
+                        src = src_dir_sel / dll_name
+                        dst = api_dir / dll_name
+                        if src.exists():
+                            if dst.exists():
+                                bak = dst.with_suffix(".dll.bak")
+                                bak.unlink(missing_ok=True)
+                                dst.rename(bak)
+                                print(f"Backed up {dll_name} to {bak.name}")
+                            shutil.copy2(src, dst)
+                            print(f"Copied {dll_name} to {api_dir} from {src_dir_sel}")
+
+                    opp_api_exists   = (api_dir / steam_api_opp).exists()
+                    opp_client_exists = (api_dir / steamclient_opp).exists()
+
+                    if opp_api_exists or opp_client_exists:
+                        src_dir_opp = base_dir / "Windows" / opposite_dir
+                        for dll_name, src, dst in (
+                            (steam_api_opp,   src_dir_opp / steam_api_opp,   api_dir / steam_api_opp),
+                            (steamclient_opp, src_dir_opp / steamclient_opp, api_dir / steamclient_opp),):
+                            if src.exists():
+                                if dst.exists():
+                                    bak = dst.with_suffix(".dll.bak")
+                                    bak.unlink(missing_ok=True)
+                                    dst.rename(bak)
+                                    print(f"Backed up {dll_name} to {bak.name}")
+                                shutil.copy2(src, dst)
+                                print(f"Copied {dll_name} to {api_dir} from {src_dir_opp}")
+
+                    steam_settings_src = game_dir / "steam_settings"
+                    if steam_settings_src.is_dir():
+                        dest_steam_settings = api_dir / "steam_settings"
+                        if dest_steam_settings.exists():
+                            bak_dir = dest_steam_settings.with_name(dest_steam_settings.name + ".bak")
+                            if bak_dir.is_dir():
+                                shutil.rmtree(bak_dir, ignore_errors=True)
+                            else:
+                                bak_dir.unlink(missing_ok=True)
+
+                            dest_steam_settings.rename(bak_dir)
+                            print(f"Backed up existing steam_settings → {bak_dir.name}")
+
+                        shutil.copytree(steam_settings_src, dest_steam_settings, dirs_exist_ok=True)
+                        print(f"Copied whole steam_settings folder to {dest_steam_settings}")
+
+                    old_dir = base_dir / "Windows" / "old"
+                    steam_dll_src = old_dir / "Steam.dll"
+                    steam_dll_dest = api_dir / "Steam.dll"
+
+                    if steam_dll_dest.exists():
+                        steam_dll_dest_bak = steam_dll_dest.with_suffix(".bak")
+                        steam_dll_dest_bak.replace(steam_dll_dest)
+                        print(f"Renamed existing Steam.dll to Steam.dll.bak in {api_dir}")
+
+                        shutil.copy2(steam_dll_src, steam_dll_dest)
+                        print(f"Copied Steam.dll from old folder to {api_dir}")
 
                     loader_suffix = "x64" if arch_value.lower() in ("x86_64", "64") else "x32"
                     client_src = base_dir / "Windows" / "client"
