@@ -3323,6 +3323,93 @@ class WatcherUI(tk.Tk):
                     except Exception as e:
                         print(f"Error preparing ColdClientLoader update: {e}")
 
+                    try:
+                       gpfile = game_dir / ".gpfile"
+                       exe_path = None
+                       if gpfile.is_file():
+                           for line in gpfile.read_text(encoding="utf-8").splitlines():
+                               if line.startswith("EXE_PATH="):
+                                   exe_path = Path(line.split("=", 1)[1].strip())
+                                   break
+
+                       if exe_path is None or not exe_path.is_file():
+                           raise RuntimeError("Executable path not found in .gpfile")
+                       real_game_root = exe_path.parent
+
+                       if exe_path.parent == api_file.parent:
+                           game_subfolder = real_game_root / "game"
+                           game_subfolder.mkdir(parents=True, exist_ok=True)
+
+                           print(f"Creating game folder at: {game_subfolder}")
+                           for item in real_game_root.iterdir():
+                               if item == game_subfolder:
+                                   continue
+                               try:
+                                   shutil.move(str(item), str(game_subfolder / item.name))
+                                   print(f"Moved {item.name} to {game_subfolder}")
+                               except Exception as e:
+                                   print(f"Could not move {item.name}: {e}")
+
+                       cold_ini = game_dir / "ColdClientLoader.ini"
+                       if cold_ini.is_file():
+                           try:
+                              if exe_path.parent == api_file.parent:
+                                  rel_exe = f"game\\{exe_path.name}"
+                              else:
+                                  rel_exe = exe_path.relative_to(real_game_root).as_posix().replace("/", "\\")
+
+                              new_lines = []
+                              for line in cold_ini.read_text(encoding="utf-8").splitlines():
+                                  if line.startswith("Exe="):
+                                      new_lines.append(f"Exe={rel_exe}")
+                                  else:
+                                      new_lines.append(line)
+                              cold_ini.write_text("\n".join(new_lines), encoding="utf-8")
+                           except Exception as e:
+                               print(f"Could not patch ColdClientLoader.ini: {e}")
+
+                       loader_path = None
+                       for cand in ("steamclient_loader_x64.exe", "steamclient_loader_x32.exe"):
+                           p = game_dir / cand
+                           if p.is_file():
+                               loader_path = p
+                               break
+
+                       launcher_path = None
+                       if loader_path:
+                           game_name = real_game_root.name
+                           launcher_name = f"{real_game_root.name} Launcher.exe"
+                           launcher_path = game_dir / launcher_name
+                           try:
+                               if loader_path.name != launcher_name:
+                                   if launcher_path.exists():
+                                       launcher_path.unlink()
+                                   loader_path.rename(launcher_path)
+                                   print(f"Renamed loader to {launcher_name}")
+                               else:
+                                   print(f"Loader already named {launcher_name}")
+                           except Exception as e:
+                               print(f"Could not rename loader exe: {e}")
+                       else:
+                           launcher_path = None
+
+                       if exe_path and exe_path.exists():
+                           real_game_root = exe_path.parent
+
+                       files_to_copy = [cold_ini, game_dir / "GameOverlayRenderer.dll", game_dir / "GameOverlayRenderer64.dll", game_dir / "steamclient.dll", game_dir / "steamclient64.dll", launcher_path]
+
+                       for src in files_to_copy:
+                           if src and src.is_file():
+                               try:
+                                   dest = real_game_root / src.name
+                                   shutil.copy2(str(src), str(dest))
+                                   print(f"Copied {src.name} to {real_game_root}")
+                               except Exception as e:
+                                   print(f"Could not copy {src.name} to {real_game_root}: {e}")
+
+                    except Exception as e:
+                        print(f"Additional Windows‑specific post‑processing failed: {e}")
+
                 elif platform == "Linux":
                     lbp_path = Path(gp_data["LBP_PATH"])
                     lib_dir = lbp_path.parent
@@ -3361,7 +3448,8 @@ class WatcherUI(tk.Tk):
                             shutil.copy2(item, dest)
                             print(f"Copied {item.name} to {lib_dir}")
 
-                messagebox.showinfo("Success", f"{emulator.upper()} files installed")
+                if platform in ["Windows", "Linux"]:
+                    messagebox.showinfo("Success", f"{emulator.upper()} files installed")
 
                 self.game_config_frame.pack_forget()
                 self.processing_step = 0
