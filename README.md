@@ -5,6 +5,9 @@ If you want just the DLC or Achievement scraping by itself see my modular entrie
 1. https://github.com/Elite-Alien/Steam-Achievement-Scrapper/tree/main
 2. https://github.com/Elite-Alien/Steam-DLC-Scraper/tree/main
 
+If you use this and want a means to track your achievement process.
+- https://github.com/Elite-Alien/Achievement-Viewer
+
 This script is basically those two combined but slightly altered in some areas. Along with added extra perks. I wrote this sloppy code on a whim because some of the other tools were broken and some could not even get data of delisted games. My adaptation of this will get delisted games and it tries to prevent you from timing yourself out on image downloads. As a SteamDB and Steam servers if scraping their images constantly you can get a timeout. So it logs the HTML file so you don't accedently do it twice and end up downloading them again. It does still grab the text information, as that is all located in the saved HTML file you have on your local storage.
 
 ### Extra Folder
