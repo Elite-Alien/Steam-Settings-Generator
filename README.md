@@ -34,7 +34,7 @@ This is currently only in the application and not terminal based yet. Though if 
 <img width="761" height="90" alt="image" src="https://github.com/user-attachments/assets/777bd42e-346d-4d6f-879e-acab74095a56" />
 
 ## Redo Existing Files at 100% with the GUI
-1. Press the "Attention Button" on the 0% game entry.
+1. Press the "Attention Button" on the complete game with 100% on the game entry.
 2. Press "Reprocess HTML" in the menu.
 3. Follow any prompts.
 4. Done
