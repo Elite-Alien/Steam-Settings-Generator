@@ -284,6 +284,7 @@ TEMP_FOLDER.mkdir(parents=True, exist_ok=True)
 EXTRA_FOLDER = pathlib.Path(__file__).resolve().parent / "Extra"
 EXTRA_FOLDER.mkdir(parents=True, exist_ok=True)
 PROGRESS_STATE_FILE = APP_FOLDER / "progress.json"
+REMOVED_FILES_FILE = APP_FOLDER / "removed_files.json"
 HTML_FOLDER = pathlib.Path(__file__).resolve().parent / "HTML"
 HTML_FOLDER.mkdir(parents=True, exist_ok=True)
 GAMES_ROOT = pathlib.Path(__file__).resolve().parent / "Games"
@@ -800,6 +801,22 @@ def save_progress_state(state: dict, folder: Path | None = None) -> None:
     except Exception:
         pass
 
+def load_removed_files() -> set:
+    if not REMOVED_FILES_FILE.is_file():
+        return set()
+    try:
+        return set(json.loads(REMOVED_FILES_FILE.read_text(encoding="utf-8")))
+    except Exception:
+        return set()
+
+def save_removed_files(removed: set) -> None:
+    try:
+        REMOVED_FILES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(REMOVED_FILES_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(removed), f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
 def extract_app_id(soup: BeautifulSoup) -> str | None:
     link_tag = soup.find("link", rel="canonical")
     if link_tag and link_tag.get("href"):
@@ -1157,13 +1174,24 @@ def main():
             current_progress = progress_state.get(html_path.name, {}).get("percent", 0)
 
             if multiplayer_achievements and not already_done:
-                if _gui_yes_no("Multiplayer achievements found. Remove them?"):
+                mp_setting = GENERAL_SETTINGS.get("mp_prompt", "Ask")
+                if mp_setting == "Yes":
                     achievements = [a for a in achievements if not a["is_multiplayer"]]
                     update_progress(max(current_progress, 50), html_path)
+                elif mp_setting == "Ask":
+                    if _gui_yes_no("Multiplayer achievements found. Remove them?"):
+                        achievements = [a for a in achievements if not a["is_multiplayer"]]
+                        update_progress(max(current_progress, 50), html_path)
                 _prompt_handled[html_path] = True
 
-            if has_hidden_prefix:
-                if not already_done:
+            if has_hidden_prefix and not already_done:
+                hidden_setting = GENERAL_SETTINGS.get("hidden_prompt", "Ask")
+                if hidden_setting == "Yes":
+                    for a in achievements:
+                        if a["description"].startswith("Hidden achievement:"):
+                            a["description"] = a["description"][len("Hidden achievement:"):].lstrip()
+                    update_progress(max(current_progress, 50), html_path)
+                elif hidden_setting == "Ask":
                     if _hidden_cleanup_needed(html_path.name, processed_html_names):
                         if _gui_yes_no('Clean descriptions that start with "Hidden achievement:"?'):
                             for a in achievements:
@@ -1175,7 +1203,7 @@ def main():
                             if a["description"].startswith("Hidden achievement:"):
                                 a["description"] = a["description"][len("Hidden achievement:"):].lstrip()
                         update_progress(max(current_progress, 50), html_path)
-                _prompt_handled[html_path] = True
+            _prompt_handled[html_path] = True
 
     for a in achievements:
         a.pop("is_multiplayer", None)
@@ -1489,7 +1517,9 @@ GENERAL_SETTINGS = SettingsManager(
     {
         "auto_update": True,
         "auto_update_gbe": True,
-        "auto_update_gse": True
+        "auto_update_gse": True,
+        "mp_prompt": "Ask",
+        "hidden_prompt": "Ask"
     }
 )
 
@@ -1729,6 +1759,18 @@ class WatcherUI(tk.Tk):
         general_container = Frame(self.general_tab, bg=theme['bg'])
         general_container.pack(pady=10, padx=20, fill="x")
 #---------------------------------------------------------------------------------------------------------------------------
+        prompt_label = Label(
+            general_container,
+            text="Update Settings",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 12, "bold")
+        )
+        prompt_label.pack(pady=(10, 5))
+
+        separator = Frame(general_container, height=2, bg=theme['border'])
+        separator.pack(fill="x", pady=(0, 10))
+
         update_frame = Frame(general_container, bg=theme['bg'])
         update_frame.pack(fill="x", pady=5)
         
@@ -1836,6 +1878,111 @@ class WatcherUI(tk.Tk):
             state=tk.NORMAL if not self.auto_update_gse_var.get() else tk.DISABLED
         )
         self.downgrade_gse_btn.pack(side="right", padx=10)
+
+        prompt_label = Label(
+            general_container,
+            text="Prompt Settings",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 12, "bold")
+        )
+        prompt_label.pack(pady=(10, 5))
+
+        separator = Frame(general_container, height=2, bg=theme['border'])
+        separator.pack(fill="x", pady=(0, 10))
+
+        mp_frame = Frame(general_container, bg=theme['bg'])
+        mp_frame.pack(fill="x", pady=5)
+
+        Label(
+            mp_frame,
+            text="Multiplayer Achievements",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 11)
+        ).pack(side="left")
+
+        mp_radio_frame = Frame(mp_frame, bg=theme['bg'])
+        mp_radio_frame.pack(side="right")
+
+        self.mp_prompt_var = tk.StringVar(value=self.general_settings.get("mp_prompt", "Ask"))
+        tk.Radiobutton(
+            mp_radio_frame,
+            text="Ask",
+            variable=self.mp_prompt_var,
+            value="Ask",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            selectcolor=theme['widget_bg'],
+            command=lambda: self.general_settings.set("mp_prompt", self.mp_prompt_var.get())
+        ).pack(side="left", padx=(0, 10))
+        tk.Radiobutton(
+            mp_radio_frame,
+            text="Yes",
+            variable=self.mp_prompt_var,
+            value="Yes",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            selectcolor=theme['widget_bg'],
+            command=lambda: self.general_settings.set("mp_prompt", self.mp_prompt_var.get())
+        ).pack(side="left", padx=(0, 10))
+        tk.Radiobutton(
+            mp_radio_frame,
+            text="No",
+            variable=self.mp_prompt_var,
+            value="No",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            selectcolor=theme['widget_bg'],
+            command=lambda: self.general_settings.set("mp_prompt", self.mp_prompt_var.get())
+        ).pack(side="left")
+
+        hidden_frame = Frame(general_container, bg=theme['bg'])
+        hidden_frame.pack(fill="x", pady=5)
+
+        Label(
+            hidden_frame,
+            text="Hidden Achievements",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 11)
+        ).pack(side="left")
+
+        hidden_radio_frame = Frame(hidden_frame, bg=theme['bg'])
+        hidden_radio_frame.pack(side="right")
+
+        self.hidden_prompt_var = tk.StringVar(value=self.general_settings.get("hidden_prompt", "Ask"))
+        tk.Radiobutton(
+            hidden_radio_frame,
+            text="Ask",
+            variable=self.hidden_prompt_var,
+            value="Ask",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            selectcolor=theme['widget_bg'],
+            command=lambda: self.general_settings.set("hidden_prompt", self.hidden_prompt_var.get())
+        ).pack(side="left", padx=(0, 10))
+        tk.Radiobutton(
+            hidden_radio_frame,
+            text="Yes",
+            variable=self.hidden_prompt_var,
+            value="Yes",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            selectcolor=theme['widget_bg'],
+            command=lambda: self.general_settings.set("hidden_prompt", self.hidden_prompt_var.get())
+        ).pack(side="left", padx=(0, 10))
+        tk.Radiobutton(
+            hidden_radio_frame,
+            text="No",
+            variable=self.hidden_prompt_var,
+            value="No",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            selectcolor=theme['widget_bg'],
+            command=lambda: self.general_settings.set("hidden_prompt", self.hidden_prompt_var.get())
+        ).pack(side="left")
+
 #---------------------------------------------------------------------------------------------------------------------------
         self.user_tab = Frame(tablist, bg=theme['bg'])
         tablist.add(self.user_tab, text="User Config")
@@ -3646,8 +3793,19 @@ class WatcherUI(tk.Tk):
         file_status.clear()
         self._row_widgets.clear()
     
+        with _prompt_handled_lock:
+            for html_path in files_to_delete:
+                _prompt_handled.pop(html_path, None)
+        for html_path in files_to_delete:
+            _download_done.pop(html_path, None)
+
         self.refresh_file_list(all_html_files, file_status)
         self.after(100, self._update_mass_close_btn)
+
+        removed_files = load_removed_files()
+        for html_path in files_to_delete:
+            removed_files.add(html_path.name)
+        save_removed_files(removed_files)
 
     # ------------------------------------------------------------
     def _confirm_remove(self, html_path: Path) -> None:
@@ -3773,6 +3931,14 @@ class WatcherUI(tk.Tk):
         except Exception as e:
             print(f"⚠️  Could not delete temporary file {temp_txt}: {e}")
 
+        with _prompt_handled_lock:
+            _prompt_handled.pop(html_path, None)
+        _download_done.pop(html_path, None)
+
+        removed_files = load_removed_files()
+        removed_files.add(html_path.name)
+        save_removed_files(removed_files)
+
     # ------------------------------------------------------------
     def _on_close(self):
         self._stop_requested = True
@@ -3787,8 +3953,6 @@ global_ui = None
 # ------------------------------------------------------------
 def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Event):
     global all_html_files, file_status
-    processed: set[Path] = set(all_html_files)
-
     progress_state = load_progress_state()
     _progress_path = PROGRESS_STATE_FILE
     _last_mtime = _progress_path.stat().st_mtime if _progress_path.is_file() else 0
@@ -3806,25 +3970,52 @@ def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Ev
 
     while not stop_flag.is_set():
         _progress_reload_json()
+        processed = set(all_html_files)
+        removed_files = load_removed_files()
         current_html = {p for p in folder.iterdir() if p.suffix.lower() == ".html"}
         new_files = current_html - processed
 
         if new_files:
+            removed_files = load_removed_files()
             print(f"Detected new HTML files: {new_files}")
             for new_html in sorted(new_files):
-                processed.add(new_html)
-                all_html_files.append(new_html)
-                file_status[new_html] = "waiting"
-                job_tracker.add_job()
+                if new_html.name in removed_files:
+                    if _gui_yes_no("You are about to download a game you removed. Would you like to continue?"):
+                        removed_files.discard(new_html.name)
+                        save_removed_files(removed_files)
+                        processed.add(new_html)
+                        all_html_files.append(new_html)
+                        file_status[new_html] = "waiting"
+                        job_tracker.add_job()
 
-                def _process(p):
-                    if global_ui is not None:
-                        global_ui.start_job()
-                    _run_main_in_thread(p)
-                    if global_ui is not None:
-                        global_ui.finish_job()
+                        def _process(p):
+                            if global_ui is not None:
+                                global_ui.start_job()
+                            _run_main_in_thread(p)
+                            if global_ui is not None:
+                                global_ui.finish_job()
 
-                threading.Thread(target=_process, args=(new_html,), daemon=True).start()
+                        threading.Thread(target=_process, args=(new_html,), daemon=True).start()
+                    else:
+                        try:
+                            new_html.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                        continue
+                else:
+                    processed.add(new_html)
+                    all_html_files.append(new_html)
+                    file_status[new_html] = "waiting"
+                    job_tracker.add_job()
+
+                    def _process(p):
+                        if global_ui is not None:
+                            global_ui.start_job()
+                        _run_main_in_thread(p)
+                        if global_ui is not None:
+                            global_ui.finish_job()
+
+                    threading.Thread(target=_process, args=(new_html,), daemon=True).start()
 
             if global_ui is not None:
                 global_ui.after(0, global_ui.refresh_file_list, all_html_files, file_status)
