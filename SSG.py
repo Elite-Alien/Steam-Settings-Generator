@@ -253,6 +253,7 @@ APP_FOLDER = pathlib.Path(__file__).resolve().parent / ".app"
 APP_FOLDER.mkdir(parents=True, exist_ok=True)
 #-------------------------------------------------------------
 VERSION_FILE = APP_FOLDER / "version.txt"
+UPDATE_CHECK_FILE = APP_FOLDER / "update_check.json"
 GBE_VERSION_FILE = APP_FOLDER / "gbe.txt"
 GSE_VERSION_FILE = APP_FOLDER / "gse.txt"
 #-------------------------------------------------------------
@@ -301,6 +302,28 @@ USER_CONFIG_FILE = APP_FOLDER / "userconfig.json"
 GENERAL_SETTINGS_FILE = APP_FOLDER / "general_settings.json"
 
 # ----------------------------------------------------------------------
+def load_update_check_time() -> float:
+    if not UPDATE_CHECK_FILE.exists():
+        return 0.0
+    try:
+        data = json.loads(UPDATE_CHECK_FILE.read_text(encoding="utf-8"))
+        return data.get("last_check", 0.0)
+    except Exception:
+        return 0.0
+
+def save_update_check_time() -> None:
+    try:
+        UPDATE_CHECK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(UPDATE_CHECK_FILE, "w", encoding="utf-8") as f:
+            json.dump({"last_check": time.time()}, f, indent=2)
+    except Exception as e:
+        print(f"Error saving update check time: {e}")
+
+def should_check_for_updates() -> bool:
+    last_check = load_update_check_time()
+    current_time = time.time()
+    return (current_time - last_check) >= (12 * 60 * 60)
+
 def check_for_updates(manual=False, target='app'):
     config = {
         "app": {
@@ -330,6 +353,11 @@ def check_for_updates(manual=False, target='app'):
 
     if not manual and not GENERAL_SETTINGS.get(cfg["auto_setting"], True):
         return
+
+        if not should_check_for_updates():
+            return
+
+    save_update_check_time()
 
     try:
         current_version = ""
@@ -2080,6 +2108,8 @@ class WatcherUI(tk.Tk):
 
     def downgrader(self, target: str = "gbe"):
         if target == "app":
+            save_update_check_time()
+
             try:
                 current_version = VERSION_FILE.read_text().strip() if VERSION_FILE.exists() else "v0.0"
             
@@ -4061,6 +4091,9 @@ def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Ev
         time.sleep(1)
 
 if __name__ == "__main__":
+    if GENERAL_SETTINGS.get("auto_update", True) or GENERAL_SETTINGS.get("auto_update_gbe", True) or GENERAL_SETTINGS.get("auto_update_gse", True):
+        save_update_check_time()
+
     if GENERAL_SETTINGS.get("auto_update", True):
         threading.Thread(target=check_for_updates, daemon=True).start()
     if GENERAL_SETTINGS.get("auto_update_gbe", True):
@@ -4118,4 +4151,3 @@ if __name__ == "__main__":
     DOWNLOADS_FOLDER.mkdir(parents=True, exist_ok=True)
 
     global_ui.mainloop()
-    
