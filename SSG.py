@@ -1558,15 +1558,13 @@ class WatcherUI(tk.Tk):
         self.dark_mode = not self.dark_mode
         theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
 
-        self.mass_close_btn.config(
-            bg=theme['button_bg'],
-            fg=theme['fg']
-        )
-        
-        self.settings_btn.config(
-            bg=theme['button_bg'],
-            fg=theme['fg']
-        )
+        self.top_bar.config(bg=theme['bg'])
+        self.control_bar.config(bg=theme['bg'])
+        self.right_button_frame.config(bg=theme['bg'])
+        self.search_entry.config(bg=theme['widget_bg'], fg=theme['fg'], insertbackground=theme['fg'])
+        self.search_btn.config(bg=theme['button_bg'], fg=theme['fg'])
+        self.mass_close_btn.config(bg=theme['button_bg'], fg=theme['fg'])
+        self.settings_btn.config(bg=theme['button_bg'], fg=theme['fg'])
 
         self.style.configure('TNotebook', background=theme['bg'])
         self.style.configure('TNotebook.Tab', background=theme['widget_bg'], foreground=theme['fg'], lightcolor=theme['border'], borderwidth=0)
@@ -1701,6 +1699,10 @@ class WatcherUI(tk.Tk):
                     bg=theme['button_bg'],
                     fg=theme['fg']
                 )
+
+    def _perform_search(self):
+        query = self.search_entry.get().lower()
+        print(f"Searching for: {query}")
 
     def _toggle_auto_update(self, target='app'):
         if target == 'gbe':
@@ -2296,8 +2298,35 @@ class WatcherUI(tk.Tk):
         self.geometry("800x800")
         self.resizable(False, False)
 
+        self.top_bar = Frame(self)
+        self.top_bar.pack(fill="x", padx=0, pady=(8, 5))
+
+        self.search_entry = Entry(
+            self.top_bar,
+            bg=self.LIGHT_THEME['widget_bg'],
+            fg=self.LIGHT_THEME['fg'],
+            insertbackground=self.LIGHT_THEME['fg'],
+            bd=0
+        )
+        self.search_entry.pack(side="left", padx=(20, 0), pady=2, ipady=4, fill="x", expand=True)
+        self.search_entry.bind("<Escape>", self._on_search_escape)
+
+        self.search_btn = Button(
+            self.top_bar,
+            text="🔍",
+            command=self._perform_search,
+            bg=self.LIGHT_THEME['button_bg'],
+            fg=self.LIGHT_THEME['fg'],
+            bd=0,
+            relief='flat'
+        )
+        self.search_btn.pack(side="left", padx=(0, 30))
+
+        self.control_bar = Frame(self)
+        self.control_bar.pack(fill="x", padx=0, pady=(0, 10))
+
         self.mass_close_btn = Button(
-            self,
+            self.control_bar,
             text="🗳",
             font=('Arial', 8),
             command=self._confirm_remove_all,
@@ -2306,14 +2335,16 @@ class WatcherUI(tk.Tk):
             bg=self.LIGHT_THEME['button_bg'],
             fg=self.LIGHT_THEME['fg']
         )
-        self.mass_close_btn.place(x=20, y=10)
+        self.mass_close_btn.pack(side="left", padx=(20, 0))
 
-        self.progress_state = progress_state
-        self.file_queue = file_queue
-        self._busy = False
+        self.counter_label = tk.Label(self.control_bar, text="Job Count: 0", font=("Helvetica", 12))
+        self.counter_label.pack(side="left", expand=True)
+
+        self.right_button_frame = Frame(self.control_bar)
+        self.right_button_frame.pack(side="right", padx=(0, 20))
 
         self.theme_btn = Button(
-            self,
+            self.right_button_frame,
             text='🌞',
             font=('Arial', 8),
             command=self.toggle_theme,
@@ -2322,10 +2353,10 @@ class WatcherUI(tk.Tk):
             bg=self.DARK_THEME['button_bg'],
             fg=self.DARK_THEME['fg']
         )
-        self.theme_btn.place(x=690, y=10)
+        self.theme_btn.pack(side="left", padx=(0, 10))
 
         self.settings_btn = Button(
-            self,
+            self.right_button_frame,
             text="⚙️",
             font=('Arial', 8),
             command=self.toggle_settings_menu,
@@ -2334,13 +2365,10 @@ class WatcherUI(tk.Tk):
             bg=self.LIGHT_THEME['button_bg'],
             fg=self.LIGHT_THEME['fg']
         )
-        self.settings_btn.place(x=735, y=10)
+        self.settings_btn.pack(side="left", padx=(0, 10))
 
         self.settings_frame = Frame(self)
         self.settings_frame.pack_propagate(False)
-
-        self.counter_label = tk.Label(self, text="Job Count: 0", font=("Helvetica", 12))
-        self.counter_label.pack(pady=(10, 0))
 
         self.list_frame = Frame(self)
         self.list_frame.pack(fill="both", expand=True, pady=(10, 0))
@@ -2385,6 +2413,11 @@ class WatcherUI(tk.Tk):
         self._drag_start_pos = (0, 0)
 
         self.toggle_theme()
+
+
+    def _on_search_escape(self, event=None):
+        self.search_entry.delete(0, tk.END)
+        self.focus()
 
     # ------------------------------------------------------------------
     def _refresh_counter(self):
@@ -2865,7 +2898,7 @@ class WatcherUI(tk.Tk):
         Button(
             btn_frame,
             text="Process",
-            command=self._process_game,
+            command=lambda: threading.Thread(target=self._process_game, daemon=True).start(),
             bg=theme['button_bg'],
             fg=theme['fg'],
             padx=20
@@ -3256,14 +3289,16 @@ class WatcherUI(tk.Tk):
     def _process_game(self):
         if self.processing_step == 1:
             if not self.selected_file:
-                messagebox.showwarning("Error", "Please select a game executable first")
+                if self.winfo_exists():
+                    messagebox.showwarning("Error", "Please select a game executable first")
                 return
 
             try:
                 self.selected_emulator = self.emu_var.get()
-                self.platform_label.pack_forget()
-                self.emu_label.pack_forget()
-                self.emu_dropdown.pack_forget()
+                if self.winfo_exists():
+                    self.after(0, lambda: self.platform_label.pack_forget())
+                    self.after(0, lambda: self.emu_label.pack_forget())
+                    self.after(0, lambda: self.emu_dropdown.pack_forget())
 
                 temp_file = TEMP_FOLDER / f"{self.current_html_path.name}.txt"
                 if not temp_file.exists():
@@ -3291,7 +3326,8 @@ class WatcherUI(tk.Tk):
                 self.processing_step = 2
 
             except Exception as e:
-                messagebox.showerror("Error", f"Initial setup failed: {str(e)}")
+                if self.winfo_exists():
+                    self.after(0, lambda: messagebox.showerror("Error", f"Initial setup failed: {str(e)}"))
 
         elif self.processing_step == 2:
             try:
@@ -3596,7 +3632,8 @@ class WatcherUI(tk.Tk):
                             print(f"Copied {item.name} to {lib_dir}")
 
                 if platform in ["Windows", "Linux"]:
-                    messagebox.showinfo("Success", f"{emulator.upper()} files installed")
+                    if self.winfo_exists():
+                        self.after(0, lambda: messagebox.showinfo("Success", f"{emulator.upper()} files installed"))
 
                 self.game_config_frame.pack_forget()
                 self.processing_step = 0
@@ -3605,7 +3642,8 @@ class WatcherUI(tk.Tk):
                 self.arch_frame.pack_forget()
 
             except Exception as e:
-                messagebox.showerror("Error", f"Installation failed: {str(e)}")
+                if self.winfo_exists():
+                    self.after(0, lambda: messagebox.showerror("Error", f"Installation failed: {str(e)}"))
 
     def _update_gpfile(self, game_dir: Path, exe_path: Path):
         gpfile = game_dir / ".gpfile"
@@ -4080,3 +4118,4 @@ if __name__ == "__main__":
     DOWNLOADS_FOLDER.mkdir(parents=True, exist_ok=True)
 
     global_ui.mainloop()
+    
