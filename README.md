@@ -10,6 +10,10 @@ If you use this and want a means to track your achievement process.
 
 This script is basically those two combined but slightly altered in some areas. Along with added extra perks. I wrote this sloppy code on a whim because some of the other tools were broken and some could not even get data of delisted games. My adaptation of this will get delisted games and it tries to prevent you from timing yourself out on image downloads. As a SteamDB and Steam servers if scraping their images constantly you can get a timeout. So it logs the HTML file so you don't accedently do it twice and end up downloading them again. It does still grab the text information, as that is all located in the saved HTML file you have on your local storage.
 
+### Requirements
+1) Linux: This currently is only coded for Linux. You might be able to use WSL on Windows to install a Linux OS inside of Windows. How well that works I can't say, as I don't own a Windows PC only a Linux PC.
+2) Python: I try to keep everything that is needed within what is in the "Pacman", "DNF", "APT", and so on package managers. So unless in a future update I add something crazy. Well you should be covered in most systems. If not look at the imports.
+
 ### Extra Folder
 If you have any files like the "configs.overlay.ini", "sounds" (folder), "fonts" (folder), or other files this script does not make those or download sounds for you. It does make a "configs.user.ini" but that is based on your entries in the application currently via settings. Place all desired files inside the Extra folder located in the folder where SSG.py is at. Every time you run SSG.py it will copy those files into the "steam_settings" folder for each game.
 
