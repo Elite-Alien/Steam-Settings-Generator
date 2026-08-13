@@ -690,6 +690,184 @@ def restart_application():
     python = sys.executable
     os.execl(python, python, *sys.argv)
 
+
+
+def download_appid_html(appid: str) -> Path | None:
+    global all_html_files, file_status
+
+    appid = appid.strip()
+    if not appid.isdigit():
+        print(f"⚠️ Invalid AppID: {appid}")
+        if global_ui:
+            global_ui.after(0, lambda: messagebox.showerror("Invalid AppID", f"{appid} is not a valid numeric AppID"))
+        return None
+
+    url = f"https://steamdb.info/app/{appid}/stats/"
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Referer': 'https://steamdb.info/',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+    }
+
+    try:
+        print(f"Downloading SteamDB page for AppID {appid}...")
+
+        session = requests.Session()
+        session.headers.update(headers)
+        session.get('https://steamdb.info/', timeout=10)
+        response = session.get(url, timeout=30)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        game_name = soup.find("h1", itemprop="name").get_text(strip=True)
+        clean_name = clean_title(game_name)
+        HTML_FOLDER = pathlib.Path(__file__).resolve().parent / "HTML"
+        HTML_FOLDER.mkdir(parents=True, exist_ok=True)
+        html_path = HTML_FOLDER / f"{clean_name}.html"
+        html_path.write_text(response.text, encoding="utf-8")
+        print(f"✅ Saved HTML to {html_path}")
+
+        if html_path not in all_html_files:
+            all_html_files.append(html_path)
+            file_status[html_path] = "waiting"
+            job_tracker.add_job()
+            threading.Thread(target=lambda: _run_main_in_thread(html_path), daemon=True).start()
+
+        if global_ui and hasattr(global_ui, 'search_entry'):
+            global_ui.after(0, lambda: global_ui.search_entry.delete(0, tk.END))
+
+        return html_path
+
+    except requests.exceptions.RequestException as e:
+        error_msg = str(e)
+        print(f"❌ SteamDB download failed: {error_msg}")
+
+        steam_api_key = GENERAL_SETTINGS.get("steam_api_key", "").strip()
+        if steam_api_key:
+            print(f"🔄 Trying Steam API with key...")
+            return download_appid_via_steam_api(appid, steam_api_key)
+        else:
+            if global_ui:
+                def show_options():
+                    result = messagebox.askyesnocancel(
+                        "Download Failed",
+                        f"Could not download AppID {appid}:\n{error_msg}\n\n"
+                        "Options:\n"
+                        "1. Open in browser to save manually (Yes)\n"
+                        "2. Add Steam API key in settings (No)\n"
+                        "3. Cancel (Cancel)"
+                    )
+                    if result:
+                        webbrowser.open(url)
+                        global_ui.search_entry.delete(0, tk.END)
+                    elif result is False:
+                        global_ui.toggle_settings_menu()
+            return None
+
+def download_appid_via_steam_api(appid: str, api_key: str) -> Path | None:
+    global all_html_files, file_status
+
+    try:
+        store_url = f"https://store.steampowered.com/api/appdetails?appids={appid}"
+        store_response = requests.get(store_url, timeout=30)
+        store_response.raise_for_status()
+        store_data = store_response.json()
+
+        if str(appid) not in store_data or not store_data[str(appid)].get('success', False):
+            print(f"❌ Game {appid} not found on Steam Store")
+            if global_ui:
+                global_ui.after(0, lambda: messagebox.showerror("Game Not Found", f"AppID {appid} not found"))
+            return None
+
+        game_name = store_data[str(appid)]['data']['name']
+        clean_name = clean_title(game_name)
+        api_url = f"https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/?key={api_key}&appid={appid}&format=json"
+        response = requests.get(api_url, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+
+        if not data.get('game', {}).get('availableGameStats', {}).get('achievements'):
+            print(f"⚠️ No achievements found for AppID {appid}")
+            if global_ui:
+                global_ui.after(0, lambda: messagebox.showinfo("No Achievements", f"AppID {appid} has no achievements"))
+            return None
+
+        HTML_FOLDER = pathlib.Path(__file__).resolve().parent / "HTML"
+        HTML_FOLDER.mkdir(parents=True, exist_ok=True)
+
+        html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{game_name} - SteamDB</title>
+    <meta property="og:url" content="https://steamdb.info/app/{appid}/stats/">
+    <link rel="canonical" href="https://steamdb.info/app/{appid}/stats/">
+</head>
+<body>
+    <h1 itemprop="name">{game_name}</h1>
+    <div id="achievements">
+"""
+
+        for ach in data['game']['availableGameStats']['achievements']:
+            display_name = ach.get('displayName', 'Unknown')
+            name = ach.get('name', '')
+            description = ach.get('description', 'No description')
+            hidden = int(ach.get('hidden', 0))
+            icon_hash = ach.get('icon', '')
+            icongray_hash = ach.get('icongray', '')
+
+            icon_filename = f"{icon_hash}.jpg" if icon_hash else "No icon"
+            icongray_filename = f"{icongray_hash}.jpg" if icongray_hash else "No icon"
+
+            html_content += f"""
+        <div id="achievement-{name}">
+            <div class="achievement_api">{name}</div>
+            <div class="achievement_name">{display_name}</div>
+            <div class="achievement_desc">{description}</div>
+            <div class="achievement_image" data-name="{icon_filename}"></div>
+            <div class="achievement_image_small" data-name="{icongray_filename}"></div>
+            {"<span class=\"achievement_spoiler\"></span>" if hidden else ""}
+        </div>
+"""
+        html_content += """
+    </div>
+</body>
+</html>
+"""
+
+        html_path = HTML_FOLDER / f"{clean_name}.html"
+        html_path.write_text(html_content, encoding="utf-8")
+        print(f"✅ Generated HTML for AppID {appid} ({game_name}) at {html_path}")
+
+        if html_path not in all_html_files:
+            all_html_files.append(html_path)
+            file_status[html_path] = "waiting"
+            job_tracker.add_job()
+            threading.Thread(target=lambda: _run_main_in_thread(html_path), daemon=True).start()
+
+        if global_ui and hasattr(global_ui, 'search_entry'):
+            global_ui.after(0, lambda: global_ui.search_entry.delete(0, tk.END))
+
+        return html_path
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f"❌ Steam API error for AppID {appid}: {error_msg}")
+        if global_ui:
+            global_ui.after(0, lambda em=error_msg: messagebox.showerror(
+                "Steam API Error",
+                f"Failed to fetch data:\n{em}\n\nCheck your API key in Settings."
+            ))
+        return None
+
 # ----------------------------------------------------------------------
 def _closest_folder(base_path: Path, html_name: str) -> Path | None:
     candidates = [p for p in base_path.iterdir() if p.is_dir()]
@@ -1547,7 +1725,8 @@ GENERAL_SETTINGS = SettingsManager(
         "auto_update_gbe": True,
         "auto_update_gse": True,
         "mp_prompt": "Ask",
-        "hidden_prompt": "Ask"
+        "hidden_prompt": "Ask",
+        "steam_api_key": ""
     }
 )
 
@@ -1600,6 +1779,7 @@ class WatcherUI(tk.Tk):
         self.style.map('TNotebook.Tab', background=[('selected', theme['widget_bg'])], foreground=[('selected', theme['fg'])])
         self.style.configure('TCombobox', fieldbackground=theme['widget_bg'], background=theme['widget_bg'], foreground=theme['fg'])
         self.style.map('TCombobox', fieldbackground=[('readonly', theme['widget_bg'])], selectbackground=[('readonly', theme['widget_bg'])], selectforeground=[('readonly', theme['fg'])], arrowcolor=[('readonly', theme['fg'])])
+        self.search_mode_dropdown.config(background=theme['widget_bg'], foreground=theme['fg'])
 
         def update_widget_colors(widget):
             try:
@@ -1786,8 +1966,25 @@ class WatcherUI(tk.Tk):
         self.general_tab = Frame(tablist, bg=theme['bg'])
         tablist.add(self.general_tab, text="General Config")
 
-        general_container = Frame(self.general_tab, bg=theme['bg'])
-        general_container.pack(pady=10, padx=20, fill="x")
+        container_canvas = Canvas(self.general_tab, bg=theme['bg'], borderwidth=0, highlightthickness=0)
+        scrollbar = Scrollbar(self.general_tab, orient="vertical", command=container_canvas.yview)
+        container_canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y", padx=(0, 2))
+        container_canvas.pack(side="left", fill="both", expand=True, padx=2, pady=2)
+        general_container = Frame(container_canvas, bg=theme['bg'])
+        canvas_window = container_canvas.create_window((0, 0), window=general_container, anchor="nw")
+
+        def _configure_container(event):
+            container_canvas.configure(scrollregion=container_canvas.bbox("all"))
+
+        general_container.bind("<Configure>", _configure_container)
+
+        def _configure_canvas(event):
+            canvas_width = event.width
+            container_canvas.itemconfig(canvas_window, width=canvas_width)
+
+        container_canvas.bind("<Configure>", _configure_canvas)
+
 #---------------------------------------------------------------------------------------------------------------------------
         prompt_label = Label(
             general_container,
@@ -1815,7 +2012,7 @@ class WatcherUI(tk.Tk):
             activebackground=theme['bg'],
             activeforeground=theme['fg'],
             selectcolor=theme['widget_bg']
-        ).pack(side="left")
+        ).pack(side="left", padx=5)
         
         self.manual_update_btn = Button(
             update_frame,
@@ -1825,7 +2022,7 @@ class WatcherUI(tk.Tk):
             fg=theme['fg'],
             state=tk.NORMAL if not self.auto_update_var.get() else tk.DISABLED
         )
-        self.manual_update_btn.pack(side="right")
+        self.manual_update_btn.pack(side="right", padx=5)
         
         self.downgrade_btn = Button(
             update_frame,
@@ -1835,7 +2032,7 @@ class WatcherUI(tk.Tk):
             fg=theme['fg'],
             state=tk.NORMAL if not self.auto_update_var.get() else tk.DISABLED
         )
-        self.downgrade_btn.pack(side="right", padx=10)
+        self.downgrade_btn.pack(side="right", padx=5)
 #---------------------------------------------------------------------------------------------------------------------------
         gbe_frame = Frame(general_container, bg=theme['bg'])
         gbe_frame.pack(fill="x", pady=5)
@@ -1851,7 +2048,7 @@ class WatcherUI(tk.Tk):
             activebackground=theme['bg'],
             activeforeground=theme['fg'],
             selectcolor=theme['widget_bg']
-        ).pack(side="left")
+        ).pack(side="left", padx=5)
     
         self.manual_update_gbe_btn = Button(
             gbe_frame,
@@ -1861,7 +2058,7 @@ class WatcherUI(tk.Tk):
             fg=theme['fg'],
             state=tk.NORMAL if not self.auto_update_gbe_var.get() else tk.DISABLED
         )
-        self.manual_update_gbe_btn.pack(side="right")
+        self.manual_update_gbe_btn.pack(side="right", padx=5)
 
         self.downgrade_gbe_btn = Button(
             gbe_frame,
@@ -1871,7 +2068,7 @@ class WatcherUI(tk.Tk):
             fg=theme['fg'],
             state=tk.NORMAL if not self.auto_update_gbe_var.get() else tk.DISABLED
         )
-        self.downgrade_gbe_btn.pack(side="right", padx=10)
+        self.downgrade_gbe_btn.pack(side="right", padx=5)
 #---------------------------------------------------------------------------------------------------------------------------
         gse_frame = Frame(general_container, bg=theme['bg'])
         gse_frame.pack(fill="x", pady=5)
@@ -1887,7 +2084,7 @@ class WatcherUI(tk.Tk):
             activebackground=theme['bg'],
             activeforeground=theme['fg'],
             selectcolor=theme['widget_bg']
-        ).pack(side="left")
+        ).pack(side="left", padx=5)
     
         self.manual_update_gse_btn = Button(
             gse_frame,
@@ -1897,7 +2094,7 @@ class WatcherUI(tk.Tk):
             fg=theme['fg'],
             state=tk.NORMAL if not self.auto_update_gse_var.get() else tk.DISABLED
         )
-        self.manual_update_gse_btn.pack(side="right")
+        self.manual_update_gse_btn.pack(side="right", padx=5)
 
         self.downgrade_gse_btn = Button(
             gse_frame,
@@ -1907,7 +2104,7 @@ class WatcherUI(tk.Tk):
             fg=theme['fg'],
             state=tk.NORMAL if not self.auto_update_gse_var.get() else tk.DISABLED
         )
-        self.downgrade_gse_btn.pack(side="right", padx=10)
+        self.downgrade_gse_btn.pack(side="right", padx=5)
 
         prompt_label = Label(
             general_container,
@@ -1930,10 +2127,10 @@ class WatcherUI(tk.Tk):
             bg=theme['bg'],
             fg=theme['fg'],
             font=("Helvetica", 11)
-        ).pack(side="left")
+        ).pack(side="left", padx=5)
 
         mp_radio_frame = Frame(mp_frame, bg=theme['bg'])
-        mp_radio_frame.pack(side="right")
+        mp_radio_frame.pack(side="right", padx=5)
 
         self.mp_prompt_var = tk.StringVar(value=self.general_settings.get("mp_prompt", "Ask"))
         tk.Radiobutton(
@@ -1976,10 +2173,10 @@ class WatcherUI(tk.Tk):
             bg=theme['bg'],
             fg=theme['fg'],
             font=("Helvetica", 11)
-        ).pack(side="left")
+        ).pack(side="left", padx=5)
 
         hidden_radio_frame = Frame(hidden_frame, bg=theme['bg'])
-        hidden_radio_frame.pack(side="right")
+        hidden_radio_frame.pack(side="right", padx=5)
 
         self.hidden_prompt_var = tk.StringVar(value=self.general_settings.get("hidden_prompt", "Ask"))
         tk.Radiobutton(
@@ -2012,6 +2209,65 @@ class WatcherUI(tk.Tk):
             selectcolor=theme['widget_bg'],
             command=lambda: self.general_settings.set("hidden_prompt", self.hidden_prompt_var.get())
         ).pack(side="left")
+
+#---------------------------------------------------------------------------------------------------------------------------
+        search_label = Label(
+            general_container,
+            text="Search Settings",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 12, "bold")
+        )
+        search_label.pack(pady=(10, 5))
+
+        separator = Frame(general_container, height=2, bg=theme['border'])
+        separator.pack(fill="x", pady=(0, 10))
+
+        api_key_frame = Frame(general_container, bg=theme['bg'])
+        api_key_frame.pack(fill="x", pady=5)
+
+        Label(
+            api_key_frame,
+            text="Steam API Key:",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 11)
+        ).pack(side="left", padx=5)
+
+        self.steam_api_key_var = tk.StringVar(value=self.general_settings.get("steam_api_key", " "))
+        self.steam_api_key_entry = Entry(
+            api_key_frame,
+            textvariable=self.steam_api_key_var,
+            width=40,
+            bg=theme['widget_bg'],
+            fg=theme['fg']
+        )
+        self.steam_api_key_entry.pack(side="left", fill="x", expand=True)
+        def on_focus_in(event):
+            event.widget.config(show="")
+
+        def on_focus_out(event):
+            event.widget.config(show="*")
+            self.general_settings.set("steam_api_key", self.steam_api_key_var.get())
+
+        self.steam_api_key_entry.bind("<FocusIn>", on_focus_in)
+        self.steam_api_key_entry.bind("<FocusOut>", on_focus_out)
+
+        self.steam_api_key_entry.bind("<KeyRelease>", lambda e: self.general_settings.set("steam_api_key", self.steam_api_key_var.get()))
+
+        if self.steam_api_key_var.get().strip():
+            self.steam_api_key_entry.config(show="*")
+
+        self.steam_api_key_entry.bind("<KeyRelease>", lambda e: self.general_settings.set("steam_api_key", self.steam_api_key_var.get()))
+
+        info_label = Label(
+            general_container,
+            text="Get API key from: https://steamcommunity.com/dev/apikey",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 10, "italic")
+        )
+        info_label.pack(fill="x", pady=(0, 10))
 
 #---------------------------------------------------------------------------------------------------------------------------
         self.user_tab = Frame(tablist, bg=theme['bg'])
@@ -2331,6 +2587,18 @@ class WatcherUI(tk.Tk):
         self.top_bar = Frame(self)
         self.top_bar.pack(fill="x", padx=0, pady=(8, 5))
 
+        self.search_mode_var = tk.StringVar(value="AppID")
+        self.search_mode_dropdown = ttk.Combobox(
+            self.top_bar,
+            textvariable=self.search_mode_var,
+            values=["AppID", "Local"],
+            state="readonly",
+            width=6,
+            font=("Helvetica", 14)
+        )
+        self.search_mode_dropdown.pack(side="left", padx=(20, 2))
+        self.search_mode_dropdown.bind("<<ComboboxSelected>>", self._on_search_mode_change)
+
         self.search_entry = Entry(
             self.top_bar,
             bg=self.LIGHT_THEME['widget_bg'],
@@ -2338,8 +2606,10 @@ class WatcherUI(tk.Tk):
             insertbackground=self.LIGHT_THEME['fg'],
             bd=0
         )
-        self.search_entry.pack(side="left", padx=(20, 0), pady=2, ipady=4, fill="x", expand=True)
+        self.search_entry.pack(side="left", padx=(0, 0), pady=2, ipady=4, fill="x", expand=True)
         self.search_entry.bind("<Escape>", self._on_search_escape)
+        self.search_entry.bind("<KeyRelease>", self._on_search_key_release)
+        self.search_entry.bind("<Return>", self._on_search_enter)
 
         self.search_btn = Button(
             self.top_bar,
@@ -2351,6 +2621,9 @@ class WatcherUI(tk.Tk):
             relief='flat'
         )
         self.search_btn.pack(side="left", padx=(0, 30))
+
+        self.filtered_html_files = []
+        self.original_html_files = []
 
         self.control_bar = Frame(self)
         self.control_bar.pack(fill="x", padx=0, pady=(0, 10))
@@ -2444,10 +2717,44 @@ class WatcherUI(tk.Tk):
 
         self.toggle_theme()
 
+    # ------------------------------------------------------------------
+    def _on_search_mode_change(self, event=None):
+        self.search_entry.delete(0, tk.END)
+        self.filtered_html_files = []
+        self.refresh_file_list(all_html_files, file_status)
+
+    def _on_search_key_release(self, event=None):
+        if self.search_mode_var.get() != "Local":
+            return
+
+        search_text = self.search_entry.get().lower()
+        self._filter_local_search(search_text)
+
+    def _on_search_enter(self, event=None):
+        if self.search_mode_var.get() == "AppID":
+            self._perform_appid_search()
 
     def _on_search_escape(self, event=None):
         self.search_entry.delete(0, tk.END)
+        self.filtered_html_files = []
+        self.refresh_file_list(all_html_files, file_status)
         self.focus()
+
+    def _perform_appid_search(self):
+        appid = self.search_entry.get().strip()
+        if appid:
+            threading.Thread(target=download_appid_html, args=(appid,), daemon=True).start()
+
+    def _filter_local_search(self, search_text: str):
+        if not search_text:
+            self.filtered_html_files = []
+            self.refresh_file_list(all_html_files, file_status)
+            return
+
+        filtered = [p for p in all_html_files if search_text.lower() in p.name.lower()]
+
+        self.filtered_html_files = filtered
+        self.refresh_file_list(filtered, file_status)
 
     # ------------------------------------------------------------------
     def _refresh_counter(self):
@@ -2539,10 +2846,13 @@ class WatcherUI(tk.Tk):
     def refresh_file_list(self, html_files: list[Path], status_map: dict[Path, str]):
         if not self.winfo_exists() or self._stop_requested:
             return
-    
-        files_copy = html_files.copy()
+
+        if self.search_mode_var.get() == "Local" and self.filtered_html_files:
+            files_copy = self.filtered_html_files.copy()
+        else:
+            files_copy = html_files.copy()
         status_copy = status_map.copy()
-    
+
         def _safe_refresh():
             if not self.winfo_exists() or self._stop_requested:
                 return
