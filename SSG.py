@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-import os, sys, re, json, argparse, difflib, pathlib, requests, shutil, subprocess, threading, queue, time, webbrowser, zipfile
+import os, sys, re, json, argparse, difflib, pathlib, requests, shutil, subprocess, threading, queue, time, webbrowser, zipfile, bcrypt, base64
 from collections import defaultdict
 from tkinter import Canvas, Scrollbar, Frame, Label, ttk, Checkbutton, Entry, filedialog
 from pathlib import Path
 from collections import OrderedDict
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
+from cryptography.fernet import Fernet
 
 all_html_files: list[Path] = []
 file_status: dict[Path, str] = {}
@@ -193,6 +194,20 @@ def _gui_yes_no(question: str) -> bool:
                 return False
             print("Please answer Yes or No.")
 
+def hash_api_key(api_key: str) -> str:
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(api_key.encode("utf-8"), salt)
+    return base64.b64encode(salt + hashed).decode("utf-8")
+
+def verify_api_key(stored_hash: str, input_key: str) -> bool:
+    try:
+        data = base64.b64decode(stored_hash.encode("utf-8"))
+        salt = data[:32]
+        stored_hashed = data[32:]
+        return bcrypt.checkpw(input_key.encode("utf-8"), stored_hashed)
+    except Exception:
+        return False
+
 #----------------------------------------------------------------------
 class JobTracker:
     def __init__(self):
@@ -300,6 +315,10 @@ GSE_TOOLS_FOLDER = TOOLS_FOLDER / "gse_tools"
 GSE_TOOLS_FOLDER.mkdir(parents=True, exist_ok=True)
 USER_CONFIG_FILE = APP_FOLDER / "userconfig.json"
 GENERAL_SETTINGS_FILE = APP_FOLDER / "general_settings.json"
+CRYPT_FOLDER = APP_FOLDER / ".crypt"
+CRYPT_FOLDER.mkdir(parents=True, exist_ok=True)
+SAPI_FILE = CRYPT_FOLDER / "sapi"
+DECKEY_FILE = CRYPT_FOLDER / ".deckey"
 
 # ----------------------------------------------------------------------
 def load_update_check_time() -> float:
@@ -690,7 +709,70 @@ def restart_application():
     python = sys.executable
     os.execl(python, python, *sys.argv)
 
+def generate_key() -> bytes:
+    return Fernet.generate_key()
 
+def save_encryption_key(key: bytes) -> None:
+    try:
+        DECKEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(DECKEY_FILE, "wb") as f:
+            f.write(key)
+    except Exception as e:
+        print(f"Error saving encryption key: {e}")
+
+def load_encryption_key() -> bytes | None:
+    if not DECKEY_FILE.exists():
+        key = generate_key()
+        save_encryption_key(key)
+        return key
+    try:
+        with open(DECKEY_FILE, "rb") as f:
+            return f.read()
+    except Exception as e:
+        print(f"Error loading encryption key: {e}")
+        return None
+
+def encrypt_api_key(api_key: str, key: bytes) -> str:
+    fernet = Fernet(key)
+    encrypted = fernet.encrypt(api_key.encode("utf-8"))
+    return encrypted.decode("utf-8")
+
+def decrypt_api_key(encrypted_key: str, key: bytes) -> str | None:
+    try:
+        fernet = Fernet(key)
+        decrypted = fernet.decrypt(encrypted_key.encode("utf-8"))
+        return decrypted.decode("utf-8")
+    except Exception as e:
+        print(f"Error decrypting API key: {e}")
+        return None
+
+def save_encrypted_api_key(api_key: str) -> None:
+    key = load_encryption_key()
+    if not key:
+        print("No encryption key available.")
+        return
+    encrypted_key = encrypt_api_key(api_key, key)
+    try:
+        SAPI_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(SAPI_FILE, "w", encoding="utf-8") as f:
+            f.write(encrypted_key)
+    except Exception as e:
+        print(f"Error saving encrypted API key: {e}")
+
+def load_decrypted_api_key() -> str | None:
+    if not SAPI_FILE.exists():
+        return None
+    key = load_encryption_key()
+    if not key:
+        print("No encryption key available.")
+        return None
+    try:
+        with open(SAPI_FILE, "r", encoding="utf-8") as f:
+            encrypted_key = f.read().strip()
+        return decrypt_api_key(encrypted_key, key)
+    except Exception as e:
+        print(f"Error loading decrypted API key: {e}")
+        return None
 
 def download_appid_html(appid: str) -> Path | None:
     global all_html_files, file_status
@@ -789,8 +871,14 @@ def download_appid_via_steam_api(appid: str, api_key: str) -> Path | None:
 
         game_name = store_data[str(appid)]['data']['name']
         clean_name = clean_title(game_name)
-        api_url = f"https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/?key={api_key}&appid={appid}&format=json"
-        response = requests.get(api_url, timeout=30)
+
+        api_url = f"https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/"
+        params = {
+            "appid": appid,
+            "format": "json",
+            "key": api_key
+        }
+        response = requests.get(api_url, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
 
@@ -1680,13 +1768,16 @@ class SettingsManager:
         self.config_file = config_file
         self.default_settings = default_settings
         self.settings = default_settings.copy()
+        self._raw_api_key = None
         self.load()
     
     def load(self):
         try:
             if self.config_file.exists():
                 with open(self.config_file, 'r', encoding='utf-8') as f:
-                    self.settings = {**self.default_settings, **json.load(f)}
+                    stored_data = json.load(f)
+                    self.settings = {**self.default_settings, **stored_data}
+                    self._raw_api_key = load_decrypted_api_key()
         except Exception as e:
             print(f"Error loading {self.config_file.name}: {e}")
             self.settings = self.default_settings.copy()
@@ -1694,16 +1785,23 @@ class SettingsManager:
     def save(self):
         try:
             self.config_file.parent.mkdir(parents=True, exist_ok=True)
+            settings_to_save = self.settings.copy()
             with open(self.config_file, 'w', encoding='utf-8') as f:
-                json.dump(self.settings, f, indent=2)
+                json.dump(settings_to_save, f, indent=2)
         except Exception as e:
             print(f"Error saving {self.config_file.name}: {e}")
     
     def get(self, key, default=None):
+        if key == "steam_api_key":
+            return self._raw_api_key or self.settings.get(key, default)
         return self.settings.get(key, self.default_settings.get(key, default))
     
     def set(self, key, value, autosave=True):
-        self.settings[key] = value
+        if key == "steam_api_key":
+            self._raw_api_key = value
+            save_encrypted_api_key(value)
+        else:
+            self.settings[key] = value
         if autosave:
             self.save()
 
@@ -2233,32 +2331,43 @@ class WatcherUI(tk.Tk):
             fg=theme['fg'],
             font=("Helvetica", 11)
         ).pack(side="left", padx=5)
-
-        self.steam_api_key_var = tk.StringVar(value=self.general_settings.get("steam_api_key", " "))
+        
+        raw_api_key = GENERAL_SETTINGS.get("steam_api_key", "")
+        self.steam_api_key_var = tk.StringVar(value=raw_api_key if raw_api_key else " ")
         self.steam_api_key_entry = Entry(
             api_key_frame,
             textvariable=self.steam_api_key_var,
             width=40,
             bg=theme['widget_bg'],
-            fg=theme['fg']
+            fg=theme['fg'],
+            show="*"
         )
         self.steam_api_key_entry.pack(side="left", fill="x", expand=True)
+        self.mask_timer = None
+
+        def reset_mask_timer():
+            if self.mask_timer:
+                self.after_cancel(self.mask_timer)
+            self.mask_timer = self.after(8000, lambda: self.steam_api_key_entry.config(show="*"))
+
+        def on_key_release(event):
+            GENERAL_SETTINGS._raw_api_key = self.steam_api_key_var.get()
+            save_encrypted_api_key(self.steam_api_key_var.get())
+            reset_mask_timer()
+
         def on_focus_in(event):
-            event.widget.config(show="")
+            self.steam_api_key_entry.config(show="")
+            reset_mask_timer()
 
         def on_focus_out(event):
-            event.widget.config(show="*")
-            self.general_settings.set("steam_api_key", self.steam_api_key_var.get())
+            self.steam_api_key_entry.config(show="*")
+            GENERAL_SETTINGS._raw_api_key = self.steam_api_key_var.get()
+            save_encrypted_api_key(self.steam_api_key_var.get())
 
+        self.steam_api_key_entry.bind("<KeyRelease>", on_key_release)
         self.steam_api_key_entry.bind("<FocusIn>", on_focus_in)
         self.steam_api_key_entry.bind("<FocusOut>", on_focus_out)
-
-        self.steam_api_key_entry.bind("<KeyRelease>", lambda e: self.general_settings.set("steam_api_key", self.steam_api_key_var.get()))
-
-        if self.steam_api_key_var.get().strip():
-            self.steam_api_key_entry.config(show="*")
-
-        self.steam_api_key_entry.bind("<KeyRelease>", lambda e: self.general_settings.set("steam_api_key", self.steam_api_key_var.get()))
+        self.steam_api_key_entry.bind("<Leave>", on_focus_out)
 
         info_label = Label(
             general_container,
