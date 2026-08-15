@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, sys, re, json, argparse, difflib, pathlib, requests, shutil, subprocess, threading, queue, time, webbrowser, zipfile, bcrypt, base64
+import os, sys, re, json, argparse, difflib, pathlib, requests, shutil, subprocess, threading, queue, time, webbrowser, zipfile, bcrypt, base64, ctypes
 from collections import defaultdict
 from tkinter import Canvas, Scrollbar, Frame, Label, ttk, Checkbutton, Entry, filedialog
 from pathlib import Path
@@ -7,6 +7,7 @@ from collections import OrderedDict
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from cryptography.fernet import Fernet
+from typing import Dict, Any, Optional
 
 all_html_files: list[Path] = []
 file_status: dict[Path, str] = {}
@@ -276,6 +277,7 @@ LATEST_RELEASE_URL = "https://api.github.com/repos/Elite-Alien/Steam-Settings-Ge
 RELEASE_URL = "https://api.github.com/repos/Elite-Alien/Steam-Settings-Generator/releases"
 GBE_LATEST_RELEASE_URL = "https://api.github.com/repos/Detanup01/gbe_fork/releases/latest"
 GSE_LATEST_RELEASE_URL = "https://api.github.com/repos/alex47exe/gse_fork/releases/latest"
+STEAMLESS_VERSION_FILE = APP_FOLDER / "sl_versions.json"
 #-------------------------------------------------------------
 GBE_FOLDER = APP_FOLDER / "gbe"
 GBE_LINUX = GBE_FOLDER / "Linux"
@@ -1834,6 +1836,262 @@ import subprocess
 from urllib.parse import unquote, urlparse
 
 # ------------------------------------------------------------
+class DropZoneHelper:
+    def __init__(
+        self,
+        parent_widget,
+        on_files_callback,
+        theme,
+        allowed_extensions=None,
+        initial_text="Drop files here or click to browse",
+        height=8,
+        font_size=12
+    ):
+        self.parent = parent_widget
+        self.on_files_callback = on_files_callback
+        self.theme = theme
+        self.allowed_extensions = [ext.lower() for ext in (allowed_extensions or [])]
+        self.initial_text = initial_text
+        self.drop_label = None
+        self._dnd_window = None
+        self._dnd_data = None
+
+        try:
+            parent_widget.tk.eval('package require tkdnd')
+            self.tkdnd_available = True
+        except:
+            try:
+                parent_widget.tk.eval('namespace eval ::tkdnd {}')
+                parent_widget.tk.eval('set ::tkdnd::initialized 1')
+                self.tkdnd_available = True
+            except:
+                self.tkdnd_available = False
+
+        self._create_drop_zone(height, font_size)
+
+    def _create_drop_zone(self, height, font_size):
+        drop_frame = Frame(self.parent, bg=self.theme['bg'])
+        drop_frame.pack(fill="both", expand=True, pady=10)
+
+        self.drop_label = Label(
+            drop_frame,
+            text=self.initial_text,
+            bg=self.theme['widget_bg'],
+            fg=self.theme['fg'],
+            height=height,
+            relief="groove",
+            font=("Helvetica", font_size),
+            cursor="hand2"
+        )
+        self.drop_label.pack(fill="both", expand=True, padx=20, pady=10)
+
+        # Bind events
+        self.drop_label.bind("<Button-1>", self._on_click)
+        self.drop_label.bind("<Control-v>", self._on_paste)
+        self._bind_drag_and_drop()
+
+    def _bind_drag_and_drop(self):
+        if self.tkdnd_available and self._is_wayland():
+            self.drop_label.bind("<ButtonPress>", self._wayland_dnd_start)
+            self.drop_label.bind("<ButtonRelease>", self._wayland_dnd_stop)
+            self.drop_label.bind("<Motion>", self._wayland_dnd_motion)
+        elif self.tkdnd_available:
+            self.drop_label.bind("<Enter>", self._xdnd_enter)
+            self.drop_label.bind("<Leave>", lambda e: self.drop_label.config(bg=self.theme['widget_bg']))
+            self.drop_label.bind("<XdndPosition>", self._xdnd_position)
+            self.drop_label.bind("<XdndDrop>", self._xdnd_drop)
+            self._register_xdnd()
+        else:
+            self.drop_label.bind("<Enter>", lambda e: self.drop_label.config(bg=self.theme['hover_bg']))
+            self.drop_label.bind("<Leave>", lambda e: self.drop_label.config(bg=self.theme['widget_bg']))
+
+    def _is_wayland(self):
+        return "wayland" in os.environ.get("XDG_SESSION_TYPE", "").lower()
+
+    def _register_xdnd(self):
+        try:
+            self.parent.tk.call('package', 'require', 'xdnd')
+            self.drop_label.tk.call('xdnd', 'bindtarget', self.drop_label._w, 'xdnd')
+            self.drop_label.tk.call('bind', 'xdnd', '<XdndEnter>', self._xdnd_enter)
+            self.drop_label.tk.call('bind', 'xdnd', '<XdndPosition>', self._xdnd_position)
+            self.drop_label.tk.call('bind', 'xdnd', '<XdndDrop>', self._xdnd_drop)
+        except Exception as e:
+            print(f"[DropZoneHelper] XDND registration error: {e}")
+
+    def _on_click(self, event=None):
+        if self.allowed_extensions:
+            file_patterns = [f"*{ext}" for ext in self.allowed_extensions]
+            file_types = [(f"{', '.join(self.allowed_extensions)} files", " ".join(file_patterns)), ("All files", "*.*")]
+        else:
+            file_types = [("All files", "*.*")]
+
+        try:
+            paths = filedialog.askopenfilenames(title="Select files", filetypes=file_types)
+            if paths:
+                self._process_paths(paths)
+        except Exception as e:
+            print(f"[DropZoneHelper] File dialog error: {e}")
+
+    def _on_paste(self, event):
+        try:
+            content = self.parent.clipboard_get()
+            if not content:
+                return
+            paths = self._parse_clipboard(content)
+            if paths:
+                self._process_paths(paths)
+        except tk.TclError:
+            pass
+        except Exception as e:
+            print(f"[DropZoneHelper] Clipboard error: {e}")
+
+    def _parse_clipboard(self, content):
+        paths = []
+
+        if content.startswith("x-special/gnome-copied-files"):
+            parts = content.split("\n")
+            uris = parts[1:] if len(parts) > 1 and parts[0] == "copy" else parts
+            for uri in uris:
+                path = self._uri_to_path(uri)
+                if path and os.path.exists(path):
+                    paths.append(path)
+        elif content.startswith("file://"):
+            for uri in content.split():
+                path = self._uri_to_path(uri)
+                if path and os.path.exists(path):
+                    paths.append(path)
+        elif os.path.exists(content):
+            paths.append(content)
+
+        return paths
+
+    def _uri_to_path(self, uri):
+        try:
+            parsed = urlparse(uri)
+            path = unquote(parsed.path).replace("%20", " ")
+            if sys.platform == "win32" and path.startswith("/"):
+                path = path[1:]
+            return path
+        except Exception:
+            return None
+
+    def _process_paths(self, paths):
+        for path in paths:
+            self._process_file_path(path)
+
+    def _process_file_path(self, path):
+        file_path = Path(path)
+
+        if self.allowed_extensions:
+            if not any(file_path.name.lower().endswith(ext) for ext in self.allowed_extensions):
+                messagebox.showwarning(
+                    "Invalid File",
+                    f"Only {', '.join(self.allowed_extensions)} files are supported"
+                )
+                return
+
+        if self.on_files_callback:
+            self.on_files_callback(file_path)
+
+    # ------------------------------------------------------------
+    # X11 Handlers
+    # ------------------------------------------------------------
+    def _xdnd_enter(self, event):
+        self.drop_label.config(bg=self.theme['hover_bg'])
+        return "copy"
+
+    def _xdnd_position(self, event):
+        return "copy"
+
+    def _xdnd_drop(self, event):
+        try:
+            data = self.parent.tk.call('selection', 'get', 'XdndSelection')
+            paths = []
+            for uri in data.split():
+                if uri.startswith('file://'):
+                    path = self._uri_to_path(uri)
+                    if path and os.path.exists(path):
+                        paths.append(path)
+            if paths:
+                self._process_paths(paths)
+        except Exception as e:
+            print(f"[DropZoneHelper] XDND drop error: {e}")
+        return "copy"
+
+    # ------------------------------------------------------------
+    # Wayland Handlers
+    # ------------------------------------------------------------
+    def _wayland_dnd_start(self, event):
+        self._dnd_data = None
+        try:
+            self._dnd_window = self.parent.tk.call('winfo', 'toplevel', self.drop_label._w)
+            self.parent.tk.call(
+                'tkdnd', 'dnd', 'bindtarget',
+                self._dnd_window, 'text/uri-list', '<Drop>', self._wayland_drop
+            )
+        except tk.TclError:
+            print("[DropZoneHelper] TkDnD not available - using file dialog fallback")
+            self._on_click()
+
+    def _wayland_dnd_motion(self, event):
+        if self._dnd_window and self._dnd_data:
+            try:
+                self.parent.tk.call('tkdnd', 'dnd', 'motion', self._dnd_window, event.x_root, event.y_root)
+            except tk.TclError:
+                pass
+
+    def _wayland_dnd_stop(self, event):
+        try:
+            if self._dnd_window:
+                self.parent.tk.call('tkdnd', 'dnd', 'cleartarget', self._dnd_window)
+        except tk.TclError:
+            pass
+        finally:
+            self._dnd_window = None
+
+    def _wayland_drop(self, event):
+        if not self.tkdnd_available:
+            return
+
+        try:
+            mime_types = ['text/uri-list', 'x-special/gnome-copied-files', 'UTF8_STRING']
+            for mime in mime_types:
+                try:
+                    data = self.parent.tk.call('tkdnd', 'dnd', 'getdata', mime)
+                    if not data:
+                        continue
+
+                    if mime == 'x-special/gnome-copied-files':
+                        lines = data.split('\n')
+                        uris = lines[1:] if lines and lines[0] == 'copy' else lines
+                    else:
+                        uris = data.split()
+
+                    paths = []
+                    for uri in uris:
+                        if uri.startswith('file://'):
+                            path = self._uri_to_path(uri)
+                            if path and os.path.exists(path):
+                                paths.append(path)
+
+                    if paths:
+                        self._process_paths(paths)
+                        return
+
+                except tk.TclError:
+                    continue
+
+            print("[DropZoneHelper] Could not process any known MIME types")
+        except Exception as e:
+            print(f"[DropZoneHelper] Wayland drop error: {e}")
+        finally:
+            self._wayland_dnd_stop(None)
+
+    def update_text(self, new_text):
+        if self.drop_label:
+            self.drop_label.config(text=new_text)
+
+# ------------------------------------------------------------
 class WatcherUI(tk.Tk):
     DARK_THEME = {
         'bg': '#2d2d2d',
@@ -2042,6 +2300,474 @@ class WatcherUI(tk.Tk):
             self.settings_frame.pack(fill="both", expand=True)
             self.settings_btn.config(text="❌")
             self.populate_settings()
+
+    def _delete_api_key(self):
+        self.steam_api_key_var.set("")
+
+        GENERAL_SETTINGS._raw_api_key = None
+        GENERAL_SETTINGS.settings["steam_api_key"] = ""
+        GENERAL_SETTINGS.save()
+
+        try:
+            if SAPI_FILE.exists():
+                SAPI_FILE.unlink()
+                print("🗑️ Deleted encrypted API key file")
+        except Exception as e:
+            print(f"⚠️ Error deleting API key file: {e}")
+
+        try:
+            if DECKEY_FILE.exists():
+                DECKEY_FILE.unlink()
+                print("🗑️ Deleted encryption key file")
+        except Exception as e:
+            print(f"⚠️ Error deleting encryption key file: {e}")
+
+    def _populate_steamless_tab(self, parent_frame, theme):
+        for widget in parent_frame.winfo_children():
+            widget.destroy()
+
+        canvas_frame = Frame(parent_frame, bg=theme['bg'])
+        canvas_frame.pack(fill="both", expand=True)
+        container_canvas = Canvas(canvas_frame, bg=theme['bg'], borderwidth=0, highlightthickness=0)
+        scrollbar = Scrollbar(canvas_frame, orient="vertical", command=container_canvas.yview)
+        container_canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        container_canvas.pack(side="left", fill="both", expand=True)
+        steamless_container = Frame(container_canvas, bg=theme['bg'])
+        self.steamless_window_id = container_canvas.create_window((0, 0), window=steamless_container, anchor="nw")
+
+        def _configure_container(event):
+            container_canvas.configure(scrollregion=container_canvas.bbox("all"))
+
+        def _configure_canvas(event):
+            if self.steamless_window_id:
+                container_canvas.itemconfig(self.steamless_window_id, width=event.width)
+
+        steamless_container.bind("<Configure>", _configure_container)
+        container_canvas.bind("<Configure>", _configure_canvas)
+
+        title = Label(
+            steamless_container,
+            text="Steamless Versions",
+            font=("Helvetica", 14, "bold"),
+            bg=theme['bg'],
+            fg=theme['fg']
+        )
+        title.pack(pady=10)
+
+        info_label = Label(
+            steamless_container,
+            text="Download and manage Steamless versions",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 10)
+        )
+        info_label.pack(pady=(0, 10))
+
+        self.steamless_releases_frame = Frame(steamless_container, bg=theme['bg'])
+        self.steamless_releases_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        if not hasattr(self, 'steamless_download_queue'):
+            self.steamless_download_queue = []
+            self.steamless_current_download = None
+            self.steamless_download_status = {}
+
+        if not self.steamless_releases_loaded:
+            loading_label = Label(
+                self.steamless_releases_frame,
+                text="Click this tab to load releases from GitHub",
+                bg=theme['bg'],
+                fg=theme['fg']
+            )
+            loading_label.pack(pady=20)
+
+    def _fetch_steamless_releases(self, theme):
+        self.steamless_releases_loaded = True
+        def fetch_and_display():
+            try:
+                response = requests.get("https://api.github.com/repos/atom0s/Steamless/releases", timeout=10)
+                response.raise_for_status()
+                releases = response.json()
+
+                self.after(0, lambda: self._clear_steamless_releases())
+                releases.sort(key=lambda x: x.get('tag_name', ''), reverse=True)
+
+                for release in releases:
+                    tag_name = release.get('tag_name', '')
+                    name = release.get('name', tag_name)
+                    self.after(0, lambda v=tag_name, n=name, r=release: self._add_steamless_release(v, n, r, theme))
+
+            except Exception as e:
+                print(f"Error fetching Steamless releases: {e}")
+                self.after(0, lambda e=e, t=theme: self._show_steamless_error(e, t))
+
+        threading.Thread(target=fetch_and_display, daemon=True).start()
+
+    def _clear_steamless_releases(self):
+        if hasattr(self, 'steamless_releases_frame'):
+            for widget in self.steamless_releases_frame.winfo_children():
+                widget.destroy()
+        self.steamless_download_status.clear()
+
+    def _show_steamless_error(self, error, theme):
+        error_label = Label(
+            self.steamless_releases_frame,
+            text=f"Failed to fetch releases: {error}",
+            bg=theme['bg'],
+            fg=theme['fg']
+        )
+        error_label.pack(pady=10)
+
+    def _add_steamless_release(self, version, name, release_data, theme):
+        release_frame = Frame(self.steamless_releases_frame, bg=theme['bg'])
+        release_frame.pack(fill="x", pady=2, padx=5)
+
+        version_label = Label(
+            release_frame,
+            text=f"{name} ({version})",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 11),
+            anchor="w"
+        )
+        version_label.pack(side="left", fill="x", expand=True)
+
+        status_frame = Frame(release_frame, bg=theme['bg'])
+        status_frame.pack(side="right")
+
+        download_btn = Button(
+            status_frame,
+            text="⬇️",
+            command=lambda v=version: self._download_steamless_version(v),
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            bd=0,
+            relief='flat',
+            padx=5,
+            pady=2
+        )
+        download_btn.pack(side="left")
+
+        download_url = None
+        for asset in release_data.get('assets', []):
+            if asset.get('name', '').endswith('.zip'):
+                download_url = asset.get('browser_download_url')
+                break
+
+        self.steamless_download_status[version] = {
+            'status': 'pending',
+            'version': version,
+            'name': name,
+            'frame': release_frame,
+            'version_label': version_label,
+            'status_frame': status_frame,
+            'download_btn': download_btn,
+            'cancel_btn': None,
+            'check_label': None,
+            'download_url': download_url
+        }
+
+    def _download_steamless_version(self, version):
+        if version not in self.steamless_download_status:
+            return
+
+        entry = self.steamless_download_status[version]
+        current_status = entry['status']
+
+        if current_status == 'completed':
+            if _gui_yes_no(f"Steamless {version} is already downloaded. Redownload?"):
+                self._delete_steamless_version_files(version)
+                entry['status'] = 'pending'
+                self._update_steamless_download_status(version, 'pending')
+            return
+
+        if current_status in ['queued', 'downloading', 'extracting']:
+            return
+
+        self.steamless_download_queue.append({'version': version})
+        entry['status'] = 'queued'
+        self._update_steamless_download_status(version, 'queued')
+
+        if not self.steamless_current_download:
+            self._process_steamless_queue()
+
+    def _process_steamless_queue(self):
+        if not self.steamless_download_queue or self.steamless_current_download:
+            return
+
+        next_item = self.steamless_download_queue.pop(0)
+        version = next_item['version']
+
+        self.steamless_current_download = version
+        self._update_steamless_download_status(version, 'downloading')
+
+        threading.Thread(
+            target=self._download_and_extract_steamless,
+            args=(version,),
+            daemon=True
+        ).start()
+
+    def _download_and_extract_steamless(self, version):
+        try:
+            if self.steamless_download_status.get(version, {}).get('status') == 'cancelled':
+                self._update_steamless_download_status(version, 'pending')
+                return
+
+            DOWNLOADS_FOLDER.mkdir(parents=True, exist_ok=True)
+            entry = self.steamless_download_status.get(version, {})
+            download_url = entry.get('download_url')
+
+            if not download_url:
+                download_url = f"https://github.com/atom0s/Steamless/releases/download/{version}/Steamless.{version}.by.atom0s.zip"
+
+            zip_filename = download_url.split('/')[-1]
+            zip_path = DOWNLOADS_FOLDER / zip_filename
+            self._update_steamless_download_status(version, 'downloading')
+            response = requests.get(download_url, stream=True, timeout=30)
+            response.raise_for_status()
+
+            with open(zip_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        if self.steamless_download_status.get(version, {}).get('status') == 'cancelled':
+                            f.close()
+                            if zip_path.exists():
+                                zip_path.unlink(missing_ok=True)
+                            self._update_steamless_download_status(version, 'pending')
+                            return
+
+            if self.steamless_download_status.get(version, {}).get('status') == 'cancelled':
+                if zip_path.exists():
+                    zip_path.unlink(missing_ok=True)
+                self._update_steamless_download_status(version, 'pending')
+                return
+
+            extract_folder = DOWNLOADS_FOLDER / zip_path.stem
+            extract_folder.mkdir(parents=True, exist_ok=True)
+            self._update_steamless_download_status(version, 'extracting')
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_folder)
+
+            if self.steamless_download_status.get(version, {}).get('status') == 'cancelled':
+                if zip_path.exists():
+                    zip_path.unlink(missing_ok=True)
+                if extract_folder.exists():
+                    shutil.rmtree(extract_folder, ignore_errors=True)
+                self._update_steamless_download_status(version, 'pending')
+                return
+
+            if not any(extract_folder.iterdir()):
+                extract_folder = DOWNLOADS_FOLDER
+                print(f"⚠️ Files extracted directly to {DOWNLOADS_FOLDER}, searching there...")
+
+            steamless_dir = APP_FOLDER / "steamless"
+            steamless_dir.mkdir(parents=True, exist_ok=True)
+            version_dir = steamless_dir / version
+            if version_dir.exists():
+                shutil.rmtree(version_dir, ignore_errors=True)
+            version_dir.mkdir(parents=True, exist_ok=True)
+
+            found_files = {
+                'Steamless.CLI.exe': None,
+                'Steamless.CLI.exe.config': None,
+                'plugins': []
+            }
+
+            for root, dirs, files in os.walk(extract_folder):
+                for file in files:
+                    if file == "Steamless.CLI.exe":
+                        found_files['Steamless.CLI.exe'] = Path(root) / file
+                    elif file == "Steamless.CLI.exe.config":
+                        found_files['Steamless.CLI.exe.config'] = Path(root) / file
+                    elif file.endswith('.dll'):
+                        found_files['plugins'].append(Path(root) / file)
+
+            if found_files['Steamless.CLI.exe']:
+                shutil.move(str(found_files['Steamless.CLI.exe']), str(version_dir / "Steamless.CLI.exe"))
+            if found_files['Steamless.CLI.exe.config']:
+                shutil.move(str(found_files['Steamless.CLI.exe.config']), str(version_dir / "Steamless.CLI.exe.config"))
+            for dll in found_files['plugins']:
+                shutil.move(str(dll), str(version_dir / dll.name))
+
+            if zip_path.exists():
+                zip_path.unlink(missing_ok=True)
+            if extract_folder.exists() and extract_folder != DOWNLOADS_FOLDER:
+                shutil.rmtree(extract_folder, ignore_errors=True)
+
+            self._update_steamless_download_status(version, 'completed')
+
+        except Exception as e:
+            print(f"Error downloading/extracting Steamless {version}: {e}")
+            self._update_steamless_download_status(version, 'error')
+        finally:
+            self.steamless_current_download = None
+            self._process_steamless_queue()
+
+    def _update_steamless_download_status(self, version, status):
+        if version not in self.steamless_download_status:
+            return
+
+        self.steamless_download_status[version]['status'] = status
+        self.after(0, lambda v=version, s=status: self._update_steamless_ui_for_version(v, s))
+
+    def _update_steamless_ui_for_version(self, version, status):
+        if version not in self.steamless_download_status:
+            return
+
+        entry = self.steamless_download_status[version]
+        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+
+        for widget in entry['status_frame'].winfo_children():
+            widget.destroy()
+
+        if status == 'pending':
+            download_btn = Button(
+                entry['status_frame'],
+                text="⬇️",
+                command=lambda v=version: self._download_steamless_version(v),
+                bg=theme['button_bg'],
+                fg=theme['fg'],
+                bd=0,
+                relief='flat',
+                padx=5,
+                pady=2
+            )
+            download_btn.pack(side="left")
+            entry['download_btn'] = download_btn
+            entry['cancel_btn'] = None
+            entry['check_label'] = None
+
+        elif status in ['queued', 'downloading', 'extracting']:
+            Label(
+                entry['status_frame'],
+                text="⏳",
+                bg=theme['bg'],
+                fg=theme['fg']
+            ).pack(side="left")
+
+            cancel_btn = Button(
+                entry['status_frame'],
+                text="❌",
+                command=lambda v=version: self._cancel_steamless_download(v),
+                bg=theme['button_bg'],
+                fg=theme['fg'],
+                bd=0,
+                relief='flat',
+                padx=5,
+                pady=2
+            )
+            cancel_btn.pack(side="left")
+            entry['cancel_btn'] = cancel_btn
+            entry['download_btn'] = None
+            entry['check_label'] = None
+
+        elif status == 'completed':
+            check_label = Label(
+                entry['status_frame'],
+                text="✅",
+                bg=theme['bg'],
+                fg=theme['fg']
+            )
+            check_label.pack(side="left")
+            entry['check_label'] = check_label
+
+            cancel_btn = Button(
+                entry['status_frame'],
+                text="❌",
+                command=lambda v=version: self._cancel_steamless_download(v),
+                bg=theme['button_bg'],
+                fg=theme['fg'],
+                bd=0,
+                relief='flat',
+                padx=5,
+                pady=2
+            )
+            cancel_btn.pack(side="left")
+            entry['cancel_btn'] = cancel_btn
+            entry['download_btn'] = None
+
+        elif status == 'error':
+            Label(
+                entry['status_frame'],
+                text="❌",
+                bg=theme['bg'],
+                fg=theme['fg']
+            ).pack(side="left")
+
+            retry_btn = Button(
+                entry['status_frame'],
+                text="↻",
+                command=lambda v=version: self._download_steamless_version(v),
+                bg=theme['button_bg'],
+                fg=theme['fg'],
+                bd=0,
+                relief='flat',
+                padx=5,
+                pady=2
+            )
+            retry_btn.pack(side="left")
+            entry['download_btn'] = retry_btn
+            entry['cancel_btn'] = None
+            entry['check_label'] = None
+
+    def _cancel_steamless_download(self, version):
+        if version not in self.steamless_download_status:
+            return
+
+        entry = self.steamless_download_status[version]
+        current_status = entry['status']
+
+        if current_status in ['downloading', 'extracting']:
+            entry['status'] = 'cancelled'
+            self._update_steamless_download_status(version, 'pending')
+        elif current_status == 'completed':
+            self._delete_steamless_version_files(version)
+            self._update_steamless_download_status(version, 'pending')
+        elif current_status == 'queued':
+            self.steamless_download_queue = [item for item in self.steamless_download_queue if item['version'] != version]
+            self._update_steamless_download_status(version, 'pending')
+
+    def _delete_steamless_version_files(self, version):
+        try:
+            steamless_dir = APP_FOLDER / "steamless"
+            version_dir = steamless_dir / version
+            if version_dir.exists():
+                shutil.rmtree(version_dir, ignore_errors=True)
+
+            download_pattern = f"Steamless.{version}.by.atom0s*"
+            for item in DOWNLOADS_FOLDER.glob(download_pattern):
+                if item.is_file():
+                    item.unlink(missing_ok=True)
+                elif item.is_dir():
+                    shutil.rmtree(item, ignore_errors=True)
+
+        except Exception as e:
+            print(f"Error deleting Steamless {version} files: {e}")
+
+    def _on_steamless_tab_selected(self, event=None):
+        if not hasattr(self, 'settings_frame') or not self.settings_frame.winfo_ismapped():
+            return
+
+        tablist = None
+        for widget in self.settings_frame.winfo_children():
+            if isinstance(widget, ttk.Notebook):
+                tablist = widget
+                break
+        if not tablist:
+            return
+
+        try:
+            current_tab_text = tablist.tab(tablist.index("current"), "text")
+        except:
+            return
+
+        if current_tab_text == "Steamless Config" and not self.steamless_releases_loaded:
+            self.steamless_releases_loaded = True
+            theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+            for widget in self.steamless_releases_frame.winfo_children():
+                widget.destroy()
+            self._fetch_steamless_releases(theme)
 
     def populate_settings(self):
         for widget in self.settings_frame.winfo_children():
@@ -2378,6 +3104,21 @@ class WatcherUI(tk.Tk):
         )
         info_label.pack(fill="x", pady=(0, 10))
 
+        self.steam_apik_del = Button(
+            api_key_frame,
+            text="Remove API Key",
+            command=self._delete_api_key,
+            bg=theme['button_bg'],
+            fg=theme['fg']
+        )
+        self.steam_apik_del.pack(side="right", padx=5)
+
+#---------------------------------------------------------------------------------------------------------------------------
+        self.steamless_tab = Frame(tablist, bg=theme['bg'])
+        tablist.add(self.steamless_tab, text="Steamless Config")
+        tablist.bind("<<NotebookTabChanged>>", self._on_steamless_tab_selected)
+        self._populate_steamless_tab(self.steamless_tab, theme)
+
 #---------------------------------------------------------------------------------------------------------------------------
         self.user_tab = Frame(tablist, bg=theme['bg'])
         tablist.add(self.user_tab, text="User Config")
@@ -2662,6 +3403,8 @@ class WatcherUI(tk.Tk):
     def __init__(self, file_queue: queue.Queue):
         super().__init__()
         self.dark_mode = False
+        self.steamless_releases_loaded = False
+        self.steamless_window_id = None
 
         try:
             self.tk.eval('package require tkdnd')
@@ -2670,9 +3413,6 @@ class WatcherUI(tk.Tk):
             self.tk.eval('namespace eval ::tkdnd {}')
             self.tk.eval('set ::tkdnd::initialized 1')
             self.tkdnd_available = False
-
-        self._dnd_data = None
-        self._dnd_window = None
 
         self.style = ttk.Style()
         self.style.theme_use('clam')
@@ -2803,6 +3543,10 @@ class WatcherUI(tk.Tk):
         self._row_widgets: dict[Path, dict[str, ttk.Progressbar | Label]] = {}
         self.canvas.create_window((0, 0), window=self.inner_frame, anchor="nw")
 
+        self.attention_frame = Frame(self)
+        self.attention_visible = False
+        self.current_html_path = None
+
         self._update_mass_close_btn()
 
         self.after(300, self._refresh_counter)
@@ -2823,6 +3567,11 @@ class WatcherUI(tk.Tk):
         self._init_game_config()
         self._dragged_file = None
         self._drag_start_pos = (0, 0)
+
+        self.stub_removal_selected_files = []
+        self.stub_removal_version_vars = {}
+        self.stub_removal_options = {}
+        self.tooltip_label = None
 
         self.toggle_theme()
 
@@ -3096,82 +3845,525 @@ class WatcherUI(tk.Tk):
         self.after(0, _safe_refresh)
 
     # ------------------------------------------------------------
-    def _confirm_attention(self, html_path: Path):    
+    def _confirm_attention(self, html_path: Path):
         if hasattr(self, 'active_menu') and self.active_menu:
-            if html_path == self.active_menu_path:
-                self.active_menu.unpost()
-                self.active_menu = None
-                self.active_menu_path = None
-                return
-            else:
-                self.active_menu.unpost()
-    
+            self.active_menu.unpost()
+            self.active_menu = None
+            self.active_menu_path = None
+
         progress_state = load_progress_state()
         file_progress = progress_state.get(html_path.name, {}).get("percent", 0)
-    
-        if file_progress == 100:
-            menu = tk.Menu(self, tearoff=0)
-            self.active_menu = menu
-            self.active_menu_path = html_path
-        
-            menu.add_command(
-                label="Reprocess HTML", 
-                command=lambda p=html_path: [
-                    (lambda path: [
-                        (temp_file := TEMP_FOLDER / f"{path.name}.txt").unlink(missing_ok=True),
-                        (old_path := OLD_HTML_FOLDER / path.name).exists() and shutil.move(str(old_path), str(path)),
-                        (folder_name := path.stem + "_files"),
-                        (old_folder := OLD_HTML_FOLDER / folder_name).exists() and shutil.move(str(old_folder), str(path.parent)),
-                        _prompt_handled.pop(p, None)
-                    ])(p),
-                    _download_done.pop(p, None),
-                    progress_state.pop(p.name, None),
-                    save_progress_state(progress_state),
-                    (all_html_files.remove(p) if p in all_html_files else None),
-                    file_status.pop(p, None),
-                    all_html_files.append(p),
-                    file_status.update({p: "waiting"}),
-                    self.after(0, self.refresh_file_list, all_html_files, file_status),
-                    job_tracker.add_job(),
-                    threading.Thread(target=lambda: _run_main_in_thread(p), daemon=True).start(),
-                    menu.unpost()
-                ]
-            )
-            menu.add_command(
-                label="Process Game", 
-                command=lambda p=html_path: [
-                    menu.unpost(),
-                    self.toggle_game_config(p)
-                ]
-            )
-        
-            menu.bind("<Unmap>", lambda e: [setattr(self, 'active_menu', None), setattr(self, 'active_menu_path', None)])
-        
-            if widgets := self._row_widgets.get(html_path):
-                btn = widgets.get("attention_btn")
-                if btn and btn.winfo_ismapped():
-                    x = btn.winfo_rootx() + btn.winfo_width()
-                    y = btn.winfo_rooty()
-                    menu.post(x, y)
-            return
-    
+
         queued, active = job_tracker.snapshot()
         in_progress = queued > 0 or active > 0
-    
+
         if in_progress:
             current_files = [p.name for p in all_html_files]
             if html_path.name in current_files:
                 return
-    
-        if _gui_yes_no(f"Force {html_path.name} to be reporccess.\n Current progress: {file_progress}%"):
-            if html_path not in all_html_files:
-                all_html_files.append(html_path)
-                file_status[html_path] = "waiting"
-        
+
+        if file_progress < 100:
+            if _gui_yes_no(f"Force {html_path.name} to be reprocessed.\n Current progress: {file_progress}%"):
+                if html_path not in all_html_files:
+                    all_html_files.append(html_path)
+                    file_status[html_path] = "waiting"
+
+                job_tracker.add_job()
+                threading.Thread(target=lambda: _run_main_in_thread(html_path), daemon=True).start()
+
+                self.after(100, lambda: self.refresh_file_list(all_html_files, file_status))
+            return
+
+        self.current_html_path = html_path
+        self._show_attention_panel()
+
+    def _show_attention_panel(self):
+        if self.attention_visible:
+            self._hide_attention_panel()
+            return
+
+        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+
+        for widget in self.attention_frame.winfo_children():
+            widget.destroy()
+
+        self.attention_frame.config(bg=theme['bg'])
+
+        title = Label(
+            self.attention_frame,
+            text="Game Actions",
+            font=("Helvetica", 14, "bold"),
+            bg=theme['bg'],
+            fg=theme['fg']
+        )
+        title.pack(pady=10)
+
+        btn_frame = Frame(self.attention_frame, bg=theme['bg'])
+        btn_frame.pack(fill="x", padx=20, pady=5)
+
+        Button(
+            btn_frame,
+            text="Reprocess HTML",
+            command=lambda: self._execute_attention_action("reprocess"),
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            padx=15,
+            pady=8
+        ).pack(side="left", padx=10, expand=True, fill="x")
+
+        Button(
+            btn_frame,
+            text="Process Game",
+            command=lambda: self._execute_attention_action("process"),
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            padx=15,
+            pady=8
+        ).pack(side="right", padx=10, expand=True, fill="x")
+
+        Button(
+            btn_frame,
+            text="Stub Removal",
+            command=lambda: self._show_stub_removal_panel(),
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            padx=15,
+            pady=8
+        ).pack(side="left", padx=10, expand=True, fill="x")
+
+        separator = Frame(self.attention_frame, height=1, bg=theme['border'])
+        separator.pack(fill="x", pady=10, padx=20)
+
+        Button(
+            self.attention_frame,
+            text="Cancel",
+            command=self._hide_attention_panel,
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            padx=15,
+            pady=8
+        ).pack(pady=(0, 10))
+
+        self.attention_frame.pack(fill="x", side="bottom", ipady=10)
+        self.attention_visible = True
+
+    def _hide_attention_panel(self):
+        self.attention_frame.pack_forget()
+        self.attention_visible = False
+
+    def _execute_attention_action(self, action: str):
+        html_path = self.current_html_path
+
+        if action == "reprocess":
+            progress_state = load_progress_state()
+
+            temp_file = TEMP_FOLDER / f"{html_path.name}.txt"
+            temp_file.unlink(missing_ok=True)
+
+            old_path = OLD_HTML_FOLDER / html_path.name
+            if old_path.exists():
+                shutil.move(str(old_path), str(html_path))
+
+            folder_name = html_path.stem + "_files"
+            old_folder = OLD_HTML_FOLDER / folder_name
+            if old_folder.exists():
+                shutil.move(str(old_folder), str(html_path.parent))
+
+            with _prompt_handled_lock:
+                _prompt_handled.pop(html_path, None)
+            _download_done.pop(html_path, None)
+            progress_state.pop(html_path.name, None)
+            save_progress_state(progress_state)
+
+            if html_path in all_html_files:
+                all_html_files.remove(html_path)
+            file_status.pop(html_path, None)
+
+            all_html_files.append(html_path)
+            file_status[html_path] = "waiting"
+
+            self.after(0, self.refresh_file_list, all_html_files, file_status)
             job_tracker.add_job()
             threading.Thread(target=lambda: _run_main_in_thread(html_path), daemon=True).start()
-        
-            self.after(100, lambda: self.refresh_file_list(all_html_files, file_status))
+        elif action == "process":
+            self.toggle_game_config(html_path)
+
+        self._hide_attention_panel()
+
+    def _show_stub_removal_panel(self):
+        self._hide_attention_panel()
+        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        self.stub_removal_selected_files = []
+        self._stub_removal_html_path = self.current_html_path
+
+        self.stub_removal_frame = Frame(self, bg=theme['bg'])
+        self.stub_removal_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        title = Label(
+            self.stub_removal_frame,
+            text="Stub Removal - Select Executables",
+            font=("Helvetica", 14, "bold"),
+            bg=theme['bg'],
+            fg=theme['fg']
+        )
+        title.pack(pady=10)
+
+        info_label = Label(
+            self.stub_removal_frame,
+            text="Add one or more Windows executables to remove Steam stub from",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 10)
+        )
+        info_label.pack(pady=(0, 10))
+
+        self.stub_removal_files_frame = Frame(self.stub_removal_frame, bg=theme['bg'])
+        self.stub_removal_files_frame.pack(fill="x", pady=5)
+
+        drop_frame = Frame(self.stub_removal_frame, bg=theme['bg'])
+        drop_frame.pack(fill="both", expand=True, pady=10)
+
+        self.stub_drop_helper = DropZoneHelper(
+            parent_widget=drop_frame,
+            on_files_callback=self._handle_stub_removal_file,
+            theme=theme,
+            allowed_extensions=['.exe'],
+            initial_text="Drop Windows .exe files here or click to browse\n(You can add multiple executables)",
+            height=8,
+            font_size=12
+        )
+
+        self.stub_removal_drop_label = self.stub_drop_helper.drop_label
+
+        btn_frame = Frame(self.stub_removal_frame, bg=theme['bg'])
+        btn_frame.pack(fill="x", pady=10)
+
+        Button(
+            btn_frame,
+            text="Continue",
+            command=self._show_stub_removal_options,
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            padx=15,
+            pady=8
+        ).pack(side="left", padx=(10, 5), expand=True, fill="x")
+
+        Button(
+            btn_frame,
+            text="Cancel",
+            command=self._hide_stub_removal_panel,
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            padx=15,
+            pady=8
+        ).pack(side="right", padx=(5, 10), expand=True, fill="x")
+
+    def _hide_stub_removal_panel(self):
+        if hasattr(self, 'stub_removal_frame') and self.stub_removal_frame.winfo_exists():
+            self.stub_removal_frame.destroy()
+        self.stub_removal_selected_files = []
+        self.stub_removal_version_vars = {}
+        self.stub_removal_options = {}
+        if hasattr(self, 'tooltip_label') and self.tooltip_label:
+            self.tooltip_label.destroy()
+            self.tooltip_label = None
+        if hasattr(self, '_stub_removal_html_path'):
+            self.current_html_path = self._stub_removal_html_path
+        self._show_attention_panel()
+
+    def _handle_stub_removal_file(self, path):
+        file_path = Path(path)
+        if not file_path.suffix.lower() == '.exe':
+            messagebox.showwarning("Invalid File", "Only Windows .exe files are supported for stub removal")
+            return
+        self._add_stub_removal_file(file_path)
+
+    def _add_stub_removal_file(self, file_path: Path):
+        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        if file_path in self.stub_removal_selected_files:
+            return
+        self.stub_removal_selected_files.append(file_path)
+        file_frame = Frame(self.stub_removal_files_frame, bg=theme['bg'])
+        file_frame.pack(fill="x", pady=2)
+        file_label = Label(
+            file_frame,
+            text=f"{len(self.stub_removal_selected_files)}. {file_path.name}",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 10)
+        )
+        file_label.pack(side="left", padx=5)
+        remove_btn = Button(
+            file_frame,
+            text="❌",
+            command=lambda fp=file_path, ff=file_frame: self._remove_stub_removal_file(fp, ff),
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            bd=0,
+            relief='flat',
+            padx=5,
+            pady=2
+        )
+        remove_btn.pack(side="right", padx=5)
+
+    def _remove_stub_removal_file(self, file_path: Path, file_frame):
+        if file_path in self.stub_removal_selected_files:
+            self.stub_removal_selected_files.remove(file_path)
+        file_frame.destroy()
+        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        for i, fp in enumerate(self.stub_removal_selected_files, 1):
+            for child in self.stub_removal_files_frame.winfo_children():
+                if isinstance(child, Frame):
+                    for label in child.winfo_children():
+                        if isinstance(label, Label) and label.cget("text").startswith(f"{i-1}."):
+                            label.config(text=f"{i}. {fp.name}")
+
+    def _show_stub_removal_options(self):
+        if not self.stub_removal_selected_files:
+            messagebox.showwarning("No Files", "Please add at least one executable file")
+            return
+        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        if hasattr(self, 'stub_removal_frame') and self.stub_removal_frame.winfo_exists():
+            self.stub_removal_frame.pack_forget()
+        self.stub_removal_options_frame = Frame(self, bg=theme['bg'])
+        self.stub_removal_options_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        title = Label(
+            self.stub_removal_options_frame,
+            text="Stub Removal - Options",
+            font=("Helvetica", 14, "bold"),
+            bg=theme['bg'],
+            fg=theme['fg']
+        )
+        title.pack(pady=10)
+
+        files_text = ", ".join(fp.name for fp in self.stub_removal_selected_files)
+        files_label = Label(
+            self.stub_removal_options_frame,
+            text=f"Selected files: {files_text}",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 10)
+        )
+        files_label.pack(pady=(0, 10))
+
+        steamless_dir = APP_FOLDER / "steamless"
+        version_folders = [f for f in steamless_dir.iterdir() if f.is_dir()] if steamless_dir.exists() else []
+        if not version_folders:
+            messagebox.showerror("Error", "No Steamless versions found. Please download at least one version in Settings > Steamless Config")
+            self._hide_stub_removal_options()
+            return
+        version_folders.sort(key=lambda x: x.name, reverse=True)
+        self.stub_removal_version_vars = {}
+
+        version_frame = Frame(self.stub_removal_options_frame, bg=theme['bg'])
+        version_frame.pack(fill="x", pady=5)
+        version_label = Label(
+            version_frame,
+            text="Select Steamless Version:",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 11)
+        )
+        version_label.pack(side="left", padx=(0, 10))
+
+        for vf in version_folders:
+            var = tk.BooleanVar(value=(vf.name == version_folders[0].name))
+            self.stub_removal_version_vars[vf.name] = var
+            def on_version_select(v=vf.name):
+                for vn, vv in self.stub_removal_version_vars.items():
+                    vv.set(vn == v)
+                self.stub_removal_selected_version = v
+            Checkbutton(
+                version_frame,
+                text=vf.name,
+                variable=var,
+                bg=theme['bg'],
+                fg=theme['fg'],
+                selectcolor=theme['widget_bg'],
+                command=on_version_select
+            ).pack(side="left", padx=10)
+        self.stub_removal_selected_version = version_folders[0].name
+
+        options_label = Label(
+            self.stub_removal_options_frame,
+            text="Options",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 12, "bold")
+        )
+        options_label.pack(pady=(10, 5))
+
+        self.stub_removal_options = {
+            'keep_bind': tk.BooleanVar(value=False),
+            'dump_payload': tk.BooleanVar(value=False),
+            'dump_steamdrmp': tk.BooleanVar(value=False),
+            'experimental': tk.BooleanVar(value=False),
+            'no_realign': tk.BooleanVar(value=True),
+            'zero_dos': tk.BooleanVar(value=True),
+            'recalculate_checksum': tk.BooleanVar(value=False)
+        }
+
+        tooltip_descriptions = {
+            'keep_bind': "What it does: By default .bind section is removed (which contains Steam-specific binding data) from the unpacked executable. Using this flag keeps that section intact in the output file.\n\nWhy use it: Some games may crash or fail to load if the .bind section is removed due to hardcoded section references. This flag preserves compatibility in those edge cases.",
+            'dump_payload': "What it does: Extracts the payload (the actual unpacked code/data that the SteamDRM wrapper was protecting) and saves it as a separate binary file on disk. The output file will be named <original>_payload.bin (or similar).\n\nWhy use it: Useful for analyzing the payload separately, especially if you want to inspect the raw unpacked code without the executable wrapper.",
+            'dump_steamdrmp': "What it does: Extracts the embedded SteamDRM.dll (the anti-tamper library) from the protected executable and saves it to disk as a separate file. The output will be named <original>_SteamDRM.dll.\n\nWhy use it: Useful for reverse engineering the DRM itself, or for comparison with other versions of the DRM.",
+            'experimental': "What it does: Enables experimental/unstable code paths. These are features that are still being tested and might not work correctly on all files, but can sometimes handle edge cases that the stable version fails on.\n\nWhy use it: If the standard version fails to unpack a particular executable, try this flag. It may succeed but could also produce a corrupted output.",
+            'no_realign': "What it does: This realigns the executable's sections to a standard alignment (usually 0x1000 for PE files). This flag disables that realignment, keeping the original (potentially non-standard) file alignment from the protected executable.\n\nWhy use it: Some debuggers or tools expect the original alignment. If the realigned file causes issues in your analysis tools, use this flag to keep the original layout.",
+            'zero_dos': "What it does: The DOS stub (the small of a PE file that runs if you execute it in DOS mode) is often filled with data in protected files. This flag zeros out (sets to 0x00) all data in the DOS stub of the output file.\n\nWhy use it: Cleaner output, and it removes data or anti-analysis tricks stored in the DOS stub.",
+            'recalculate_checksum': "What it does: After unpacking, the output file's checksum may be invalid. This flag recalculates the PE header checksum and patches it into the output file, making it valid.\n\nWhy use it: Some loaders or debuggers (like x64dbg) ignore invalid checksums, but others (like some anti-cheat or Windows loader checks) may reject the file. This ensures the file passes that validation."
+        }
+
+        options_frame = Frame(self.stub_removal_options_frame, bg=theme['bg'])
+        options_frame.pack(fill="x", pady=5)
+        for key, var in self.stub_removal_options.items():
+            option_frame = Frame(options_frame, bg=theme['bg'])
+            option_frame.pack(fill="x", pady=2)
+            Checkbutton(
+                option_frame,
+                text=self._get_option_display_name(key),
+                variable=var,
+                bg=theme['bg'],
+                fg=theme['fg'],
+                selectcolor=theme['widget_bg']
+            ).pack(side="left", padx=5)
+            tooltip_btn = Label(
+                option_frame,
+                text="❓",
+                bg=theme['bg'],
+                fg=theme['fg'],
+                cursor="question_arrow"
+            )
+            tooltip_btn.pack(side="left", padx=5)
+            tooltip_btn.bind("<Enter>", lambda e, k=key: self._show_tooltip(e, tooltip_descriptions[k]))
+            tooltip_btn.bind("<Leave>", self._hide_tooltip)
+
+        btn_frame = Frame(self.stub_removal_options_frame, bg=theme['bg'])
+        btn_frame.pack(fill="x", pady=10)
+        Button(
+            btn_frame,
+            text="Execute",
+            command=self._execute_stub_removal,
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            padx=15,
+            pady=8
+        ).pack(side="right", padx=10)
+        Button(
+            btn_frame,
+            text="Back",
+            command=self._show_stub_removal_panel,
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            padx=15,
+            pady=8
+        ).pack(side="left", padx=10)
+
+    def _hide_stub_removal_options(self):
+        if hasattr(self, 'stub_removal_options_frame') and self.stub_removal_options_frame.winfo_exists():
+            self.stub_removal_options_frame.pack_forget()
+            self.stub_removal_options_frame.destroy()
+        if hasattr(self, 'tooltip_label') and self.tooltip_label:
+            self.tooltip_label.destroy()
+            self.tooltip_label = None
+
+    def _get_option_display_name(self, key):
+        display_names = {
+            'keep_bind': "Keep Bind Section",
+            'dump_payload': "Dump Payload To Disk",
+            'dump_steamdrmp': "Dump SteamDRMP.dll To Disk",
+            'experimental': "Use Experimental Features",
+            'no_realign': "Don't Realign Sections",
+            'zero_dos': "Zero DOS Stub Data",
+            'recalculate_checksum': "Recalculate File Checksum"
+        }
+        return display_names.get(key, key)
+
+    def _show_tooltip(self, event, text):
+        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        if hasattr(self, 'tooltip_label') and self.tooltip_label:
+            self.tooltip_label.destroy()
+        self.tooltip_label = Label(
+            self,
+            text=text,
+            bg=theme['widget_bg'],
+            fg=theme['fg'],
+            borderwidth=1,
+            relief="solid",
+            wraplength=400,
+            justify="left"
+        )
+        self.tooltip_label.place(x=event.x_root + 10, y=event.y_root + 10)
+
+    def _hide_tooltip(self, event=None):
+        if hasattr(self, 'tooltip_label') and self.tooltip_label:
+            self.tooltip_label.destroy()
+            self.tooltip_label = None
+
+    def _execute_stub_removal(self):
+        if not self.stub_removal_selected_files:
+            messagebox.showwarning("No Files", "No executables selected for stub removal")
+            return
+        version = self.stub_removal_selected_version
+        steamless_dir = APP_FOLDER / "steamless" / version
+        steamless_cli = steamless_dir / "Steamless.CLI.exe"
+        if not steamless_cli.exists():
+            messagebox.showerror("Error", f"Steamless.CLI.exe not found in {steamless_dir}")
+            return
+        for exe_path in self.stub_removal_selected_files:
+            cmd = [str(steamless_cli), str(exe_path)]
+            if self.stub_removal_options['keep_bind'].get():
+                cmd.append("-k")
+            if self.stub_removal_options['dump_payload'].get():
+                cmd.append("-d")
+            if self.stub_removal_options['dump_steamdrmp'].get():
+                cmd.append("-s")
+            if self.stub_removal_options['experimental'].get():
+                cmd.append("-e")
+            if self.stub_removal_options['no_realign'].get():
+                cmd.append("-r")
+            if self.stub_removal_options['zero_dos'].get():
+                cmd.append("-z")
+            if self.stub_removal_options['recalculate_checksum'].get():
+                cmd.append("-c")
+            print(f"Executing: {' '.join(cmd)}")
+            try:
+                startupinfo = None
+                if sys.platform.startswith("win"):
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    startupinfo.wShowWindow = subprocess.SW_HIDE
+                result = subprocess.run(
+                    cmd,
+                    startupinfo=startupinfo,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                if result.returncode == 0:
+                    print(f"✅ Stub removal completed for {exe_path.name}")
+                else:
+                    error_msg = result.stderr or result.stdout or "Unknown error"
+                    print(f"❌ Stub removal failed for {exe_path.name}: {error_msg}")
+                    messagebox.showerror("Error", f"Stub removal failed for {exe_path.name}:\n{error_msg}")
+            except Exception as e:
+                print(f"❌ Failed to execute stub removal for {exe_path.name}: {str(e)}")
+                messagebox.showerror("Error", f"Failed to execute stub removal for {exe_path.name}:\n{str(e)}")
+        self._hide_stub_removal_options()
+
+    def _on_close(self):
+        self._stop_requested = True
+
+        if hasattr(self, 'attention_frame') and self.attention_frame.winfo_exists():
+            self.attention_frame.pack_forget()
+
+        if hasattr(self, 'steamless_download_status'):
+            for version, entry in self.steamless_download_status.items():
+                if entry['status'] in ['downloading', 'extracting']:
+                    entry['status'] = 'cancelled'
+                    self._delete_steamless_version_files(version)
+
+        self.destroy()
 
     # ------------------------------------------------------------
     def _init_game_config(self):
@@ -3194,7 +4386,8 @@ class WatcherUI(tk.Tk):
                 self.platform_label.pack()
                 self.emu_label.pack(side="left", padx=(0, 10))
                 self.emu_dropdown.pack(side="left")
-                self.drop_label.config(text="Drop A Game Executable Here or Click to Browse")
+                if hasattr(self, 'game_drop_helper'):
+                    self.game_drop_helper.update_text("Drop A Game Executable Here or Click to Browse")
                 return
             else:
                 if self.selected_file is not None:
@@ -3214,6 +4407,7 @@ class WatcherUI(tk.Tk):
                 self.game_config_frame.pack_forget()
                 self.game_config_visible = False
                 self.selected_file = None
+                self._show_attention_panel()
         else:
             if html_path:
                 self.current_html_path = html_path
@@ -3297,52 +4491,23 @@ class WatcherUI(tk.Tk):
         self.arch_dropdown.pack(side="left")
 
         drop_frame = Frame(self.game_config_frame, bg=theme['bg'])
-        drop_frame.pack(pady=20, fill="both", expand=True, padx=50)
-    
-        self.drop_label = Label(
-            drop_frame,
-            text="Drop A Game Executable Here or Click to Browse",
-            bg=theme['widget_bg'],
-            fg=theme['fg'],
+        drop_frame.pack(pady=10, fill="both", expand=True, padx=20)
+
+        self.game_drop_helper = DropZoneHelper(
+            parent_widget=drop_frame,
+            on_files_callback=self._handle_file,
+            theme=theme,
+            allowed_extensions=['.exe', '.x86', '.x86_64', '.sh', '.bin', ''],
+            initial_text="Drop A Game Executable Here or Click to Browse",
             height=10,
-            relief="groove",
-            font=("Helvetica", 14),
-            cursor="hand2"
+            font_size=14
         )
-        self.drop_label.pack(fill="both", expand=True)
 
-        self.drop_label.bind("<Button-1>", self._browse_exe)
-
-        self.drop_label.bind("<Control-v>", self._handle_clipboard_paste)
+        self.drop_label = self.game_drop_helper.drop_label
         self.drop_label.focus_set()
 
-        self.tkdnd_available = False
-        try:
-            self.tk.call('package', 'require', 'tkdnd')
-            self.tkdnd_available = True
-        except tk.TclError:
-            print("TkDnD not available, using fallback methods")
-
-        if self.tkdnd_available and self._is_wayland():
-            self.drop_label.bind("<ButtonPress>", self._wayland_dnd_start)
-            self.drop_label.bind("<ButtonRelease>", self._wayland_dnd_stop)
-            self.drop_label.bind("<Motion>", self._wayland_dnd_motion)
-        elif self.tkdnd_available:
-            self.drop_label.bind("<Enter>", self._xdnd_enter)
-            self.drop_label.bind("<Leave>", self._xdnd_leave)
-            self.drop_label.bind("<XdndPosition>", self._xdnd_position)
-            self.drop_label.bind("<XdndDrop>", self._xdnd_drop)
-            self._register_xdnd()
-        else:
-            self.drop_label.bind("<Enter>", lambda e: self.drop_label.config(bg=theme['hover_bg']))
-            self.drop_label.bind("<Leave>", lambda e: self.drop_label.config(bg=theme['widget_bg']))
-
-            if self._is_wayland():
-                self.drop_label.bind("<Motion>", self._wayland_dnd_motion)
-                self.drop_label.bind("<Leave>", self._xdnd_leave)
-
         btn_frame = Frame(self.game_config_frame, bg=theme['bg'])
-        btn_frame.pack(pady=20)
+        btn_frame.pack(pady=10)
     
         Button(
             btn_frame,
@@ -3363,149 +4528,11 @@ class WatcherUI(tk.Tk):
         ).pack(side="right", padx=10)
 
     def _on_emulator_changed(self, event):
-        self.drop_label.focus_set()
+        if hasattr(self, 'game_drop_helper'):
+            self.game_drop_helper.drop_label.focus_set()
 
     def _is_wayland(self):
         return "wayland" in os.environ.get("XDG_SESSION_TYPE", "").lower()
-
-    def _register_xdnd(self):
-        self.tk.call('package', 'require', 'xdnd')
-        self.drop_label.tk.call('xdnd', 'bindtarget', self.drop_label._w, 'xdnd')
-        self.drop_label.tk.call('bind', 'xdnd', '<XdndEnter>', self._xdnd_enter)
-        self.drop_label.tk.call('bind', 'xdnd', '<XdndPosition>', self._xdnd_position)
-        self.drop_label.tk.call('bind', 'xdnd', '<XdndDrop>', self._xdnd_drop)
-
-    def _xdnd_enter(self, event):
-        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
-        self.drop_label.config(bg=theme['hover_bg'])
-        return "copy"
-
-    def _xdnd_position(self, event):
-        return "copy"
-
-    def _xdnd_leave(self, event):
-        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
-        self.drop_label.config(bg=theme['widget_bg'])
-
-    def _xdnd_drop(self, event):
-        try:
-            data = self.tk.call('selection', 'get', 'XdndSelection')
-            for uri in data.split():
-                if uri.startswith('file://'):
-                    path = unquote(urlparse(uri).path)
-                    if sys.platform.startswith("win"):
-                        path = path.lstrip('/')
-                    self._handle_file(path)
-        except Exception as e:
-            print(f"Xdnd drop error: {e}")
-        return "copy"
-
-    def _handle_clipboard_paste(self, event):
-        try:
-            content = self.clipboard_get()
-            if not content:
-                return
-
-            if content.startswith("x-special/gnome-copied-files"):
-                parts = content.split("\n")
-                if len(parts) > 1:
-                    uris = parts[1:]
-                    for uri in uris:
-                        path = self._uri_to_path(uri)
-                        if path and os.path.exists(path):
-                            self._handle_file(path)
-                            return
-
-            elif content.startswith("file://"):
-                uris = content.split()
-                for uri in uris:
-                    path = self._uri_to_path(uri)
-                    if path and os.path.exists(path):
-                        self._handle_file(path)
-                        return
-
-            if os.path.exists(content):
-                self._handle_file(content)
-        except tk.TclError:
-            pass
-        except Exception as e:
-            print(f"Clipboard paste error: {e}")
-
-    def _uri_to_path(self, uri):
-        try:
-            parsed = urlparse(uri)
-            path = unquote(parsed.path)
-
-            if sys.platform == "win32" and path.startswith("/"):
-                path = path[1:]
-            return path
-        except Exception:
-            return None
-
-    def _wayland_dnd_start(self, event):
-        self._dnd_data = None
-        try:
-            self._dnd_window = self.tk.call('winfo', 'toplevel', self.drop_label._w)
-            self.tk.call('tkdnd', 'dnd', 'bindtarget', self._dnd_window, 'text/uri-list', '<Drop>', self._wayland_drop)
-        except tk.TclError:
-            print("TkDnD not available - using fallback file dialog")
-            self._open_file_dialog()
-
-    def _wayland_dnd_motion(self, event):
-        if self._dnd_window and self._dnd_data:
-            try:
-                self.tk.call('tkdnd', 'dnd', 'motion', self._dnd_window, event.x_root, event.y_root)
-            except tk.TclError:
-                pass
-
-    def _wayland_dnd_stop(self, event):
-        try:
-            if self._dnd_window:
-                self.tk.call('tkdnd', 'dnd', 'cleartarget', self._dnd_window)
-        except tk.TclError:
-            pass
-        finally:
-            self._dnd_window = None
-
-    def _wayland_drop(self, event):
-        if not self.tkdnd_available:
-            return
-    
-        try:
-            mime_types = ['text/uri-list', 'x-special/gnome-copied-files', 'UTF8_STRING']
-            for mime in mime_types:
-                try:
-                    data = self.tk.call('tkdnd', 'dnd', 'getdata', mime)
-                    if not data:
-                        continue
-                
-                    if mime == 'x-special/gnome-copied-files':
-                        lines = data.split('\n')
-                        if lines[0] == 'copy':
-                            uris = lines[1:]
-                        else:
-                            uris = lines
-                    else:
-                        uris = data.split()
-                
-                    for uri in uris:
-                        if uri.startswith('file://'):
-                            try:
-                                path = unquote(urlparse(uri).path)
-                                path = path.replace("%20", " ")
-                                if sys.platform.startswith("win"):
-                                    path = path.lstrip('/')
-                                self._handle_file(path)
-                            except Exception as e:
-                                print(f"Error processing URI {uri}: {e}")
-                    return
-                except tk.TclError:
-                    continue
-            print("Could not process any known MIME types")
-        except Exception as e:
-            print(f"Wayland drop error: {e}")
-        finally:
-            self._wayland_dnd_stop(None)
 
     def _detect_platform(self, file_path: str):
         path = Path(file_path)
@@ -3525,18 +4552,6 @@ class WatcherUI(tk.Tk):
             self.emu_dropdown['values'] = ['GBE', 'GSE']
             self.emu_var.set('GBE')
     
-    def _browse_exe(self, event=None):
-        file_types = [("Executables", "*.exe *.x86 *.x86_64 *.bin *.sh"), ("All files", "*.*")]
-    
-        try:
-            path = filedialog.askopenfilename(title="Select Game Executable", filetypes=file_types)
-        except Exception as e:
-            print(f"File dialog error: {e}, trying console fallback")
-            path = self._console_file_prompt()
-
-        if path:
-            self._handle_file(path)
-
     def _console_file_prompt(self):
         print("--- Console File Selection ---")
         print("Please enter the full path to your game executable:")
@@ -3783,6 +4798,20 @@ class WatcherUI(tk.Tk):
                 temp_file = TEMP_FOLDER / f"{self.current_html_path.name}.txt"
                 game_dir = Path(temp_file.read_text().split("GAMEDIR=",1)[1].split("\n",1)[0].strip())
                 gpfile = game_dir / ".gpfile"
+
+                app_id = None
+                if temp_file.exists():
+                    for line in temp_file.read_text().splitlines():
+                        if line.startswith("appid="):
+                            app_id = line.split("=", 1)[1].strip()
+                            break
+
+                app_id = None
+                if temp_file.exists():
+                    for line in temp_file.read_text().splitlines():
+                        if line.startswith("appid="):
+                            app_id = line.split("=", 1)[1].strip()
+                            break
 
                 gp_data = {}
                 platform = None
@@ -4429,6 +5458,16 @@ class WatcherUI(tk.Tk):
     # ------------------------------------------------------------
     def _on_close(self):
         self._stop_requested = True
+
+        if hasattr(self, 'attention_dialog') and self.attention_dialog.winfo_exists():
+            self.attention_dialog.grab_release()
+            self.attention_dialog.destroy()
+        if hasattr(self, 'stub_removal_frame') and self.stub_removal_frame.winfo_exists():
+            self.stub_removal_frame.destroy()
+        if hasattr(self, 'stub_removal_options_frame') and self.stub_removal_options_frame.winfo_exists():
+            self.stub_removal_options_frame.destroy()
+        if hasattr(self, 'tooltip_label') and self.tooltip_label:
+            self.tooltip_label.destroy()
         self.destroy()
 
     @property
