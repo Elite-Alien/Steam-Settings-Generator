@@ -31,6 +31,12 @@ If you have any files like the "configs.overlay.ini", "sounds" (folder), "fonts"
 ### Settings Menu
 This is currently only in the application and not terminal based yet. Though if you want this to create you a "configs.user.ini" for your games. Click "Enable User Config" inside of the settings menu. Enter in all your desired information and it will create the "configs.user.ini" for you with the information you entered. Now each and every game will have this file placed inside the "steam_settings" folder.
 
+### General Settings
+You can mange general settings and choose to use a Steam API key or not. It's not required, but it is a extra addition if you choose to use it. Steam API Keys are stored encrypted in a file. If you open it the file will not show your actual key just a bunch of junk. Then once in the application it stars the key out so it's not directly visible. The application does decrypt the key for using the Steam API as Steam will not accept the encrypted key. However, once it is done using it, it instantly encrypts the data again.
+
+<img width="780" height="386" alt="SSG_GC" src="https://github.com/user-attachments/assets/c0a0af37-1bb1-4ed5-a415-030c940b09c3" />
+
+### Steam Settings Users Config File
 <img width="797" height="483" alt="image" src="https://github.com/user-attachments/assets/21b85cb4-a08a-4256-8599-67cefcc98ae3" />
 
 ### Download Manager
