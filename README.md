@@ -33,8 +33,8 @@ This is currently only in the application and not terminal based yet. Though if 
 
 <img width="797" height="483" alt="image" src="https://github.com/user-attachments/assets/21b85cb4-a08a-4256-8599-67cefcc98ae3" />
 
-### Settings Download Manager
-You can manage emulators and versions and potential other things if there is anything else to be added down the road. Steam-Settings-Generator now has the ability for you to decide what you want. No more auto update to the latest and backup of the old. If there is an issue in one version, you can skip it. Just click the download and anything installed will be checked off. Click the "X" and it will delete the installed version, returning it to the previous state. This download manager is also cached so you are not timing out do to constant looking at the releases.
+### Download Manager
+You can now manage emulators versions and potential other things if there is anything else to be added down the road. Steam-Settings-Generator now has the ability for you to decide what you want. No more auto update to the latest and backup of the old. If there is an issue in one version, you can skip it. Just click the download and anything installed will be checked off. Click the "X" and it will delete the installed version, returning it to the previous state. This download manager is also cached so you are not timing out do to constant looking at the releases.
 
 <img width="786" height="381" alt="SSG_DLM" src="https://github.com/user-attachments/assets/334038dd-6c2f-457e-9e20-e4e2145b7e84" />
 
