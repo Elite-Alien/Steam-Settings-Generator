@@ -275,9 +275,8 @@ GSE_VERSION_FILE = APP_FOLDER / "gse.txt"
 #-------------------------------------------------------------
 LATEST_RELEASE_URL = "https://api.github.com/repos/Elite-Alien/Steam-Settings-Generator/releases/latest"
 RELEASE_URL = "https://api.github.com/repos/Elite-Alien/Steam-Settings-Generator/releases"
-GBE_LATEST_RELEASE_URL = "https://api.github.com/repos/Detanup01/gbe_fork/releases/latest"
-GSE_LATEST_RELEASE_URL = "https://api.github.com/repos/alex47exe/gse_fork/releases/latest"
-STEAMLESS_VERSION_FILE = APP_FOLDER / "sl_versions.json"
+DLM_VERSION_FILE = APP_FOLDER / "dlm_versions.json"
+DLM_CACHE_FILE = APP_FOLDER / "dlm_cache.json"
 #-------------------------------------------------------------
 GBE_FOLDER = APP_FOLDER / "gbe"
 GBE_LINUX = GBE_FOLDER / "Linux"
@@ -353,30 +352,16 @@ def check_for_updates(manual=False, target='app'):
             "auto_setting": "auto_update",
             "asset_patterns": [r"\.zip$"],
             "success_msg": "Application"
-        },
-        "gbe": {
-            "version_file": GBE_VERSION_FILE,
-            "release_url": GBE_LATEST_RELEASE_URL,
-            "auto_setting": "auto_update_gbe",
-            "asset_patterns": [r"linux.*\.tar\.bz2$", r"win.*\.7z$"],
-            "success_msg": "GBE"
-        },
-        "gse": {
-            "version_file": GSE_VERSION_FILE,
-            "release_url": GSE_LATEST_RELEASE_URL,
-            "auto_setting": "auto_update_gse",
-            "asset_patterns": [r"linux.*\.tar\.bz2$", r"win.*\.7z$"],
-            "success_msg": "GSE"
         }
     }
-    
+
     cfg = config[target]
 
     if not manual and not GENERAL_SETTINGS.get(cfg["auto_setting"], True):
         return
 
-        if not should_check_for_updates():
-            return
+    if not should_check_for_updates():
+        return
 
     save_update_check_time()
 
@@ -391,16 +376,16 @@ def check_for_updates(manual=False, target='app'):
         response.raise_for_status()
         release_data = response.json()
         latest_tag = release_data["tag_name"]
-        
+
         if manual:
             print(f"Latest {cfg['success_msg']} version: {latest_tag}")
 
         if latest_tag != current_version:
-            msg = f"New {cfg['success_msg']} version available: {latest_tag}\n Download and install?"
+            msg = f"New {cfg['success_msg']} version available: {latest_tag}\nDownload and install?"
             if _gui_yes_no(msg):
                 assets = []
                 patterns = [re.compile(p, re.I) for p in cfg["asset_patterns"]]
-                
+
                 for asset in release_data.get("assets", []):
                     if any(pattern.search(asset["name"]) for pattern in patterns):
                         assets.append(asset)
@@ -409,301 +394,60 @@ def check_for_updates(manual=False, target='app'):
                     error_msg = f"Missing required assets for {cfg['success_msg']} update"
                     raise Exception(error_msg)
 
-                if target == "app":
-                    pass
-                else:
-                    target_folder = DOWNLOADS_FOLDER / target
-                    target_folder.mkdir(parents=True, exist_ok=True)
-    
-                    release_patterns = [r"^emu-linux-release\.tar\.bz2$", r"^emu-win-release\.7z$"]
-                    release_assets = [a for a in assets if any(re.fullmatch(p, a["name"], re.I) for p in release_patterns)]
+                # Only app update logic - no GBE/GSE
+                for asset in assets:
+                    dl_path = DOWNLOADS_FOLDER / asset["name"]
+                    response = requests.get(asset["browser_download_url"], stream=True)
+                    response.raise_for_status()
+                    with open(dl_path, "wb") as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
 
-                    for asset in release_assets:
-                        dl_path = target_folder / asset["name"]
-        
-                        response = requests.get(asset["browser_download_url"], stream=True)
-                        response.raise_for_status()
-                        with open(dl_path, "wb") as f:
-                            for chunk in response.iter_content(chunk_size=8192):
-                                f.write(chunk)
+                    with zipfile.ZipFile(dl_path, 'r') as zip_ref:
+                        temp_extract = ROOT_DIR / "update_temp"
+                        temp_extract.mkdir(exist_ok=True)
+                        zip_ref.extractall(temp_extract)
+                        extracted_folder = next(temp_extract.iterdir())
+                        for item in extracted_folder.iterdir():
+                            dest = ROOT_DIR / item.name
+                            if dest.is_dir():
+                                shutil.rmtree(dest, ignore_errors=True)
+                            elif dest.exists():
+                                dest.unlink()
+                            shutil.move(str(item), str(dest))
 
-                        linux_extract = target_folder / "Linux_Extract"
-                        windows_extract = target_folder / "Windows_Extract"
+                        shutil.rmtree(temp_extract, ignore_errors=True)
+                        dl_path.unlink(missing_ok=True)
 
-                        try:
-                            if "linux" in asset["name"].lower():
-                                if linux_extract.exists():
-                                    shutil.rmtree(linux_extract)
-                                linux_extract.mkdir()
-                
-                                subprocess.run(["tar", "xjf", str(dl_path), "-C", str(linux_extract)])
+                cfg["version_file"].write_text(latest_tag, encoding="utf-8")
 
-                                tools_subdir = GBE_TOOLS_FOLDER if target == "gbe" else GSE_TOOLS_FOLDER
-                                tools_subdir.mkdir(parents=True, exist_ok=True)
-                                for interface_file in linux_extract.rglob("generate_interfaces_x*"):
-                                    if interface_file.is_file() and not interface_file.suffix:
-                                        dest = tools_subdir / interface_file.name
-                                        bak_file = None
-                                        if dest.exists():
-                                            bak_file = dest.with_name(dest.name + '.bak')
-                                            if bak_file.exists():
-                                                bak_file.unlink()
-                                            dest.rename(bak_file)
-                                        dest.unlink(missing_ok=True)
-                                        shutil.move(str(interface_file), str(dest))
-                                        if bak_file:
-                                            print(f"Moved {interface_file} to {dest} (Backup: {bak_file})")
-                                        else:
-                                            print(f"Moved {interface_file} to {dest}")
-                                        os.chmod(dest, 0o755)
-
-                                for experimental_path in linux_extract.rglob("experimental"):
-                                    if experimental_path.is_dir():
-                                        print(f"Found experimental directory at: {experimental_path}")
-                                        for arch in ["x32", "x64"]:
-                                            arch_path = experimental_path / arch
-                                            dest_dir = (GBE_LINUX if target == "gbe" else GSE_LINUX) / arch
-                                            if arch_path.is_dir():
-                                                print(f"Checking Linux {arch} folder: {arch_path}")
-                                                required_files = {"libsteam_api.so", "steamclient.so"}
-                                                found_files = {f.name for f in arch_path.iterdir() if f.is_file()}
-
-                                                alt_names = set()
-                                                for fname in found_files:
-                                                    alt_name = fname.replace("_x64", "").replace("_x32", "")
-                                                    if alt_name in required_files:
-                                                        alt_names.add(alt_name)
-                                                found_files.update(alt_names)
-                
-                                                print(f"Files present: {', '.join(found_files)}")
-                                                has_all = required_files.issubset(found_files)
-                
-                                                if has_all:
-                                                    if target == "gbe":
-                                                        dest_dir = GBE_LINUX / arch
-                                                    else:
-                                                        dest_dir = GSE_LINUX / arch
-                                                    print(f"Moving Linux {arch} files to {dest_dir}")
-                                                    try:
-                                                        dest_dir.mkdir(parents=True, exist_ok=True)
-                                                        for src_file in arch_path.iterdir():
-                                                            if src_file.is_file():
-                                                                dest_file = dest_dir / src_file.name
-                                                                bak_file = None
-                                                                if dest_file.exists():
-                                                                    bak_file = dest_file.with_name(dest_file.name + '.bak')
-                                                                    if bak_file.exists():
-                                                                        bak_file.unlink()
-                                                                    dest_file.rename(bak_file)
-                                                                shutil.move(str(src_file), str(dest_file))
-                                                                backup_info = f" (Backup: {bak_file})" if bak_file else ""
-                                                                print(f"Moved {src_file} to {dest_file}{backup_info}")
-                                                        print(f"Successfully moved Linux {arch} files")
-                                                    except Exception as e:
-                                                        print(f"Error moving files: {e}")
-                                                else:
-                                                    missing = required_files - found_files
-                                                    print(f"Missing required: {', '.join(missing)}")
-
-                            elif "win" in asset["name"].lower():
-                                if windows_extract.exists():
-                                    shutil.rmtree(windows_extract)
-                                windows_extract.mkdir()
-                
-                                if sys.platform.startswith("win"):
-                                    subprocess.run(["7z", "x", str(dl_path), f"-o{str(windows_extract)}", "-y"])
-                                else:
-                                    subprocess.run(["7zr", "x", str(dl_path), f"-o{str(windows_extract)}", "-y"])
-                
-                                tools_subdir = GBE_TOOLS_FOLDER if target == "gbe" else GSE_TOOLS_FOLDER
-                                tools_subdir.mkdir(parents=True, exist_ok=True)
-                                for interface_file in windows_extract.rglob("generate_interfaces_x*.exe"):
-                                    dest = tools_subdir / interface_file.name
-                                    bak_file = None
-                                    if dest.exists():
-                                        bak_file = dest.with_name(dest.name + ".bak")
-                                        if bak_file.exists():
-                                            bak_file.unlink()
-                                        dest.rename(bak_file)
-                                    shutil.move(str(interface_file), str(dest))
-                                    if bak_file:
-                                        print(f"Moved {interface_file} to {dest} (Backup: {bak_file})")
-                                    else:
-                                        print(f"Moved {interface_file} to {dest}")
-
-                                for experimental_path in windows_extract.rglob("experimental"):
-                                    if experimental_path.is_dir():
-                                       print(f"Found experimental directory at: {experimental_path}")
-                                       for arch in ["x32", "x64"]:
-                                           arch_path = experimental_path / arch
-                                           dest_dir = (GBE_WINDOWS if target == "gbe" else GSE_WINDOWS) / arch
-                                           if arch_path.is_dir():
-                                               print(f"Checking Windows {arch} folder: {arch_path}")
-                                               required = {
-                                                   "x32": ["steam_api.dll", "steamclient.dll"],
-                                                   "x64": ["steam_api64.dll", "steamclient64.dll"]
-                                               }[arch]
-                    
-                                               found_files = {f.name for f in arch_path.iterdir() if f.is_file()}
-                                               alt_names = set()
-                                               for fname in found_files:
-                                                   alt_name = fname.replace("_x64", "").replace("_x32", "")
-                                                   if alt_name in required:
-                                                       alt_names.add(alt_name)
-                                               found_files.update(alt_names)
-                    
-                                               print(f"Files present: {', '.join(found_files)}")
-                                               has_all = set(required).issubset(found_files)
-                    
-                                               if has_all:
-                                                   if target == "gbe":
-                                                       dest_dir = GBE_WINDOWS / arch
-                                                   else:
-                                                       dest_dir = GSE_WINDOWS / arch
-                                                   print(f"Moving {arch} files to {dest_dir}")
-                                                   try:
-                                                       dest_dir.mkdir(parents=True, exist_ok=True)
-                                                       for src_file in arch_path.iterdir():
-                                                           if src_file.is_file():
-                                                               dest_file = dest_dir / src_file.name
-                                                               bak_file = None
-                                                               if dest_file.exists():
-                                                                   bak_file = dest_file.with_name(dest_file.name + '.bak')
-                                                                   if bak_file.exists():
-                                                                       bak_file.unlink()
-                                                                   dest_file.rename(bak_file)
-                                                               shutil.move(str(src_file), str(dest_file))
-                                                               backup_info = f" (Backup: {bak_file})" if bak_file else ""
-                                                               print(f"Moved {src_file} to {dest_file}{backup_info}")
-                                                       print(f"Successfully moved Windows {arch} files")
-                                                   except Exception as e:
-                                                       print(f"Error moving files: {e}")
-                                               else:
-                                                   missing = set(required) - found_files
-                                                   print(f"Missing required: {', '.join(missing)}")
-
-                                steamclient_src = windows_extract / "steamclient_experimental"
-                                for steamclient_src in windows_extract.glob("**/steamclient_experimental"):
-                                    print(f"Found steamclient_experimental at: {steamclient_src}")
-                                    if steamclient_src.is_dir():
-                                        client_files = [
-                                            "steamclient_loader_x64.exe", "steamclient_loader_x32.exe",
-                                            "steamclient64.dll", "steamclient.dll",
-                                            "GameOverlayRenderer64.dll", "GameOverlayRenderer.dll",
-                                            "ColdClientLoader.ini"
-                                        ]
-                                        for fname in client_files:
-                                            src_file = steamclient_src / fname
-                                            if src_file.exists():
-                                                if target == "gbe":
-                                                    dest_file = GBE_WINDOWS_CLIENT / fname
-                                                else:
-                                                    dest_file = GSE_WINDOWS_CLIENT / fname
-                                                print(f"Moving client file: {src_file} to {dest_file}")
-                                                bak_file = None
-                                                if dest_file.exists():
-                                                    bak_file = dest_file.with_name(dest_file.name + '.bak')
-                                                    if bak_file.exists():
-                                                        bak_file.unlink()
-                                                    dest_file.rename(bak_file)
-                                                shutil.move(str(src_file), str(dest_file))
-                                                if bak_file:
-                                                    print(f"Moved client file: {src_file} to {dest_file} (Backup: {bak_file})")
-                                                else:
-                                                    print(f"Moved client file: {src_file} to {dest_file}")
-
-                                        old_lib_candidates = list(windows_extract.rglob("steam_old_lib"))
-                                        if not old_lib_candidates:
-                                            print("No steam_old_lib folder found under", windows_extract)
-                                        else:
-                                            for old_lib_path in old_lib_candidates:
-                                                print(f"Found steam_old_lib at: {old_lib_path}")
-
-                                                old_target = (GBE_WINDOWS if target == "gbe" else GSE_WINDOWS) / "old"
-                                                moved_any = False
-
-                                                for file in old_lib_path.iterdir():
-                                                    if not file.is_file() or file.suffix.lower() != ".dll":
-                                                        continue
-
-                                                    dest_file = old_target / file.name
-                                                    if dest_file.exists():
-                                                        bak = dest_file.with_name(dest_file.name + ".bak")
-                                                        if bak.exists():
-                                                            bak.unlink()
-                                                        dest_file.rename(bak)
-                                                        print(f"Backed‑up {dest_file.name} → {bak.name}")
-
-                                                    old_target.mkdir(parents=True, exist_ok=True)
-                                                    shutil.move(str(file), str(dest_file))
-                                                    print(f"Moved {file.name} → {dest_file}")
-                                                    moved_any = True
-
-                                                if not moved_any:
-                                                    print(f"steam_old_lib folder {old_lib_path} contained no .dll files")
-                                                try:
-                                                    shutil.rmtree(old_lib_path, ignore_errors=True)
-                                                    print(f"Removed empty steam_old_lib folder {old_lib_path}")
-                                                except Exception as e:
-                                                    print(f"Error cleaning steam_old_lib folder {old_lib_path}: {e}")
-
-                                        extra_dlls = steamclient_src / "extra_dlls"
-                                        if extra_dlls.exists():
-                                            if target == "gbe":
-                                                dest_dlls = GBE_WINDOWS_CLIENT / "extra_dlls"
-                                            else:
-                                                dest_dlls = GSE_WINDOWS_CLIENT / "extra_dlls"
-                                            print(f"Merging extra DLLs from {extra_dlls} to {dest_dlls}")
-                                            dest_dlls.mkdir(parents=True, exist_ok=True)
-                                            for src_dll in extra_dlls.iterdir():
-                                                if src_dll.is_file():
-                                                    dest_dll = dest_dlls / src_dll.name
-
-                                                    if dest_dll.exists():
-                                                        bak_dll = dest_dll.with_name(dest_dll.name + '.bak')
-                                                        if bak_dll.exists():
-                                                            bak_dll.unlink()
-                                                        dest_dll.rename(bak_dll)
-                                                    shutil.move(str(src_dll), str(dest_dll))
-                                            try:
-                                                extra_dlls.rmdir()
-                                            except OSError:
-                                                pass
-
-                        finally:
-                            dl_path.unlink(missing_ok=True)
-                    try:
-                        shutil.rmtree(target_folder, ignore_errors=True)
-                        print(f"Cleaned up {target} temp files")
-                    except Exception as e:
-                        print(f"Error cleaning {target} temp folder: {e}")
-
-                    cfg["version_file"].write_text(latest_tag, encoding="utf-8")
-    
-                    if manual:
-                        messagebox.showinfo(f"{cfg['success_msg']} Update Complete", f"{cfg['success_msg']} files updated!")
+                if manual:
+                    messagebox.showinfo(
+                        f"{cfg['success_msg']} Update Complete",
+                        f"{cfg['success_msg']} files updated!"
+                    )
             else:
                 print(f"{cfg['success_msg']} update canceled by user")
         else:
             if manual:
                 msg = f"You have the latest {cfg['success_msg']} version"
                 if global_ui is not None:
-                    def _show_info():
-                        messagebox.showinfo(f"{cfg['success_msg']} Update Check", msg)
-                    global_ui.after(0, _show_info)
+                    global_ui.after(0, lambda: messagebox.showinfo(
+                        f"{cfg['success_msg']} Update Check", msg
+                    ))
                 else:
                     messagebox.showinfo(f"{cfg['success_msg']} Update Check", msg)
             else:
                 print(f"You have the latest {cfg['success_msg']} version")
-            
+
     except Exception as e:
         print(f"⚠️ {cfg['success_msg']} update failed: {e}")
         if manual:
             error_msg = f"Failed to update {cfg['success_msg']}: {str(e)}"
             if global_ui is not None:
-                def _show_error():
-                    messagebox.showerror(f"{cfg['success_msg']} Update Error", error_msg)
-                global_ui.after(0, _show_error)
+                global_ui.after(0, lambda: messagebox.showerror(
+                    f"{cfg['success_msg']} Update Error", error_msg
+                ))
             else:
                 messagebox.showerror(f"{cfg['success_msg']} Update Error", error_msg)
 
@@ -1112,6 +856,33 @@ def save_removed_files(removed: set) -> None:
             json.dump(list(removed), f, indent=2, ensure_ascii=False)
     except Exception:
         pass
+
+def load_dlm_versions() -> dict:
+    if not DLM_VERSION_FILE.exists():
+        return {}
+    try:
+        return json.loads(DLM_VERSION_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def save_dlm_versions(versions: dict) -> None:
+    try:
+        DLM_VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(DLM_VERSION_FILE, "w", encoding="utf-8") as f:
+            json.dump(versions, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"Error saving DLM versions: {e}")
+
+def is_version_installed(target: str, version: str) -> bool:
+    versions = load_dlm_versions()
+    return versions.get(target, {}).get(version, False)
+
+def mark_version_installed(target: str, version: str, installed: bool = True) -> None:
+    versions = load_dlm_versions()
+    if target not in versions:
+        versions[target] = {}
+    versions[target][version] = installed
+    save_dlm_versions(versions)
 
 def extract_app_id(soup: BeautifulSoup) -> str | None:
     link_tag = soup.find("link", rel="canonical")
@@ -1822,8 +1593,6 @@ GENERAL_SETTINGS = SettingsManager(
     GENERAL_SETTINGS_FILE,
     {
         "auto_update": True,
-        "auto_update_gbe": True,
-        "auto_update_gse": True,
         "mp_prompt": "Ask",
         "hidden_prompt": "Ask",
         "steam_api_key": ""
@@ -2092,6 +1861,824 @@ class DropZoneHelper:
             self.drop_label.config(text=new_text)
 
 # ------------------------------------------------------------
+class DownloadManager:
+    TARGETS = {
+        "steamless": {
+            "name": "Steamless",
+            "release_url": "https://api.github.com/repos/atom0s/Steamless/releases",
+            "asset_patterns": [r"\.zip$"],
+            "install_dir": APP_FOLDER / "steamless",
+        },
+        "gbe": {
+            "name": "GBE",
+            "release_url": "https://api.github.com/repos/Detanup01/gbe_fork/releases",
+            "asset_patterns": [
+                r"emu-linux-release\.tar\.bz2$",
+                r"emu-win-release\.7z$"
+            ],
+            "install_dir": GBE_FOLDER,
+            "tools_dir": GBE_TOOLS_FOLDER,
+        },
+        "gse": {
+            "name": "GSE",
+            "release_url": "https://api.github.com/repos/alex47exe/gse_fork/releases",
+            "asset_patterns": [
+                r"emu-linux-release\.tar\.bz2$",
+                r"emu-win-release\.7z$"
+            ],
+            "install_dir": GSE_FOLDER,
+            "tools_dir": GSE_TOOLS_FOLDER,
+        }
+    }
+
+    def __init__(self, target: str, ui_instance=None):
+        self.target = target
+        self.ui = ui_instance
+        self.config = self.TARGETS.get(target)
+        if not self.config:
+            raise ValueError(f"Unknown download target: {target}")
+
+        self.download_queue = []
+        self.current_download = None
+        self.download_status = {}
+        self._cached_releases = None
+        self._load_cached_releases()
+
+    def _load_cached_releases(self):
+        if not DLM_CACHE_FILE.exists():
+            self._cached_releases = None
+            return
+        try:
+            cache_mtime = DLM_CACHE_FILE.stat().st_mtime
+            if time.time() - cache_mtime < 8 * 60 * 60:  # 8 hours
+                with open(DLM_CACHE_FILE, 'r', encoding='utf-8') as f:
+                    cached_data = json.load(f)
+                self._cached_releases = cached_data.get(self.target)
+            else:
+                self._cached_releases = None
+        except Exception as e:
+            print(f"⚠️ Error loading cached releases for {self.target}: {e}")
+            self._cached_releases = None
+
+    def _save_cached_releases(self, releases: list):
+        try:
+            cached_data = {}
+            if DLM_CACHE_FILE.exists():
+                with open(DLM_CACHE_FILE, 'r', encoding='utf-8') as f:
+                    cached_data = json.load(f)
+            cached_data[self.target] = releases
+            DLM_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(DLM_CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(cached_data, f, indent=2)
+        except Exception as e:
+            print(f"⚠️ Error saving cached releases for {self.target}: {e}")
+
+    def fetch_releases(self, callback=None):
+        if self._cached_releases is not None:
+            if callback:
+                self.ui.after(0, lambda: callback(self._cached_releases))
+            return
+
+        def _fetch():
+            try:
+                response = requests.get(self.config["release_url"], timeout=10)
+                response.raise_for_status()
+                releases = response.json()
+                releases.sort(
+                    key=lambda x: x.get('published_at', ''),
+                    reverse=True
+                )
+
+                if self.target in ["gbe", "gse"]:
+                    filtered = []
+                    for release in releases:
+                        version = release.get('tag_name', '')
+                        if not version:
+                            continue
+                        has_assets = False
+                        for asset in release.get('assets', []):
+                            if any(re.search(p, asset['name'], re.I) for p in self.config["asset_patterns"]):
+                                has_assets = True
+                                break
+                        if has_assets:
+                            filtered.append(release)
+                    releases = filtered
+
+                self._cached_releases = releases
+                self._save_cached_releases(releases)
+
+                if callback:
+                    self.ui.after(0, lambda: callback(releases))
+            except Exception as e:
+                print(f"⚠️ Error fetching {self.config['name']} releases: {e}")
+                if callback:
+                    self.ui.after(0, lambda: callback([]))
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    def get_cached_releases(self) -> list | None:
+        return self._cached_releases
+
+    def _get_version_dir(self, version: str) -> Path:
+        return self.config["install_dir"] / version
+
+    def is_installed(self, version: str) -> bool:
+        return is_version_installed(self.target, version)
+
+    def _clear_temp_folder(self, temp_folder: Path):
+        try:
+            if temp_folder.exists():
+                shutil.rmtree(temp_folder, ignore_errors=True)
+        except Exception as e:
+            print(f"Error cleaning temp folder {temp_folder}: {e}")
+
+    def download_and_install(self, version: str, release_data: dict):
+        if version not in self.download_status:
+            self.download_status[version] = {
+                'status': 'pending',
+                'version': version,
+                'frame': None,
+                'version_label': None,
+                'status_frame': None,
+                'download_btn': None,
+                'cancel_btn': None,
+                'check_label': None,
+                'delete_btn': None,
+                'retry_btn': None,
+            }
+        else:
+            for field in ['frame', 'version_label', 'status_frame', 'download_btn',
+                         'cancel_btn', 'check_label', 'delete_btn', 'retry_btn']:
+                if field not in self.download_status[version]:
+                    self.download_status[version][field] = None
+
+        if self.download_status[version]['status'] in ['completed', 'queued', 'downloading', 'extracting']:
+            return
+
+        self.download_status[version]['status'] = 'queued'
+        self.download_queue.append(version)
+        self._update_status(version, 'queued')
+
+        if not self.current_download:
+            self._process_queue()
+
+    def _process_queue(self):
+        if not self.download_queue or self.current_download:
+            return
+
+        version = self.download_queue.pop(0)
+        self.current_download = version
+        self._update_status(version, 'downloading')
+
+        threading.Thread(
+            target=self._download_and_extract,
+            args=(version,),
+            daemon=True
+        ).start()
+
+    def _download_and_extract(self, version: str):
+        try:
+            response = requests.get(self.config["release_url"], timeout=10)
+            response.raise_for_status()
+            releases = response.json()
+            release = next((r for r in releases if r['tag_name'] == version), None)
+            if not release:
+                self._update_status(version, 'error')
+                print(f"Release {version} not found for {self.config['name']}")
+                return
+
+            assets = []
+            for a in release.get('assets', []):
+                if any(re.search(p, a['name'], re.I) for p in self.config["asset_patterns"]):
+                    assets.append(a)
+
+            if not assets:
+                self._update_status(version, 'error')
+                print(f"No matching assets found for {self.config['name']} {version}")
+                return
+
+            print(f"Found {len(assets)} assets for {self.config['name']} {version}")
+
+            linux_dl = DOWNLOADS_FOLDER / "linux" / version
+            windows_dl = DOWNLOADS_FOLDER / "windows" / version
+            temp_extract = DOWNLOADS_FOLDER / f"{version}_temp"
+
+            for d in [linux_dl, windows_dl, temp_extract]:
+                if d.exists():
+                    shutil.rmtree(d, ignore_errors=True)
+                d.mkdir(parents=True, exist_ok=True)
+
+            for asset in assets:
+                asset_name = asset['name']
+                is_linux = 'linux' in asset_name.lower() or asset_name.endswith('.tar.bz2')
+                is_windows = 'win' in asset_name.lower() or asset_name.endswith('.7z')
+
+                clean_name = asset_name
+                for ext in ['.tar.bz2', '.tar.gz', '.tar', '.7z', '.zip']:
+                    if clean_name.lower().endswith(ext):
+                        clean_name = clean_name[:-len(ext)]
+
+                if is_linux:
+                    dl_path = linux_dl / asset_name
+                    extract_target = linux_dl / clean_name
+                elif is_windows:
+                    dl_path = windows_dl / asset_name
+                    extract_target = windows_dl / clean_name
+                else:
+                    dl_path = temp_extract / asset_name
+                    extract_target = temp_extract / clean_name
+
+                print(f"Downloading {asset_name}...")
+
+                try:
+                    resp = requests.get(asset['browser_download_url'], stream=True, timeout=30)
+                    resp.raise_for_status()
+                    with open(dl_path, 'wb') as f:
+                        for chunk in resp.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                                if self.download_status.get(version, {}).get('status') == 'cancelled':
+                                    f.close()
+                                    dl_path.unlink(missing_ok=True)
+                                    self._update_status(version, 'pending')
+                                    return
+                except Exception as e:
+                    print(f"Download failed for {asset_name}: {e}")
+                    self._clear_temp_folder(temp_extract)
+                    self._update_status(version, 'error')
+                    return
+
+                if extract_target.exists():
+                    shutil.rmtree(extract_target, ignore_errors=True)
+                extract_target.mkdir(parents=True, exist_ok=True)
+
+                try:
+                    if asset_name.endswith('.zip'):
+                        with zipfile.ZipFile(dl_path, 'r') as zip_ref:
+                            zip_ref.extractall(extract_target)
+                    elif asset_name.endswith('.tar.bz2'):
+                        subprocess.run(["tar", "xjf", str(dl_path), "-C", str(extract_target)], check=True)
+                    elif asset_name.endswith('.7z'):
+                        if sys.platform.startswith("win"):
+                            subprocess.run(["7z", "x", str(dl_path), f"-o{extract_target}", "-y"], check=True)
+                        else:
+                            subprocess.run(["7zr", "x", str(dl_path), f"-o{extract_target}", "-y"], check=True)
+                except Exception as e:
+                    print(f"Extraction failed for {asset_name}: {e}")
+                    self._clear_temp_folder(temp_extract)
+                    self._update_status(version, 'error')
+                    return
+
+                extracted_items = list(extract_target.iterdir())
+                if len(extracted_items) == 1 and extracted_items[0].is_dir():
+                    subdir = extracted_items[0]
+                    for item in subdir.iterdir():
+                        dest = extract_target / item.name
+                        if dest.exists():
+                            if dest.is_dir():
+                                shutil.rmtree(dest, ignore_errors=True)
+                            else:
+                                dest.unlink()
+                        shutil.move(str(item), str(dest))
+                    subdir.rmdir()
+
+                dl_path.unlink(missing_ok=True)
+                print(f"Extracted {asset_name} to {extract_target}")
+
+            self._update_status(version, 'extracting')
+            print(f"Installing files for {self.config['name']} {version}...")
+
+            version_dir = self._get_version_dir(version)
+            if version_dir.exists():
+                shutil.rmtree(version_dir, ignore_errors=True)
+            version_dir.mkdir(parents=True, exist_ok=True)
+
+            self._install_emu(DOWNLOADS_FOLDER, version)
+
+            installed_files = list(version_dir.rglob("*"))
+            if not installed_files:
+                print(f"CRITICAL: No files installed to {version_dir}!")
+                self._update_status(version, 'error')
+                return
+
+            print(f"Successfully installed {len(installed_files)} files to {version_dir}")
+            self._clear_temp_folder(temp_extract)
+
+            linux_parent = DOWNLOADS_FOLDER / "linux"
+            windows_parent = DOWNLOADS_FOLDER / "windows"
+
+            for d in [linux_parent, windows_parent]:
+                if d.exists():
+                    try:
+                        shutil.rmtree(d, ignore_errors=True)
+                        print(f"🗑️ Deleted download folder: {d}")
+                    except Exception as e:
+                        print(f"⚠️ Failed to delete {d}: {e}")
+
+            mark_version_installed(self.target, version, True)
+            self._update_status(version, 'completed')
+
+        except Exception as e:
+            print(f"Error in download/extract for {version}: {e}")
+            self._update_status(version, 'error')
+        finally:
+            self.current_download = None
+            self._process_queue()
+
+#----------------------------------------------------------------------------------------------------
+    def _install_files(self, extract_folder: Path, install_dir: Path):
+        if self.target == "steamless":
+            self._install_steamless(extract_folder, install_dir)
+        elif self.target in ["gbe", "gse"]:
+            self._install_emu(extract_folder, install_dir.name)
+#----------------------------------------------------------------------------------------------------
+    def _install_steamless(self, extract_folder: Path, install_dir: Path):
+        found = {'executable': None, 'config': None, 'plugins': []}
+
+        for root, _, files in os.walk(extract_folder):
+            for file in files:
+                fpath = Path(root) / file
+                if file == "Steamless.CLI.exe":
+                    found['executable'] = fpath
+                elif file == "Steamless.CLI.exe.config":
+                    found['config'] = fpath
+                elif file.endswith('.dll'):
+                    found['plugins'].append(fpath)
+
+        if found['executable']:
+            shutil.move(str(found['executable']), str(install_dir / "Steamless.CLI.exe"))
+        if found['config']:
+            shutil.move(str(found['config']), str(install_dir / "Steamless.CLI.exe.config"))
+        for dll in found['plugins']:
+            shutil.move(str(dll), str(install_dir / dll.name))
+#----------------------------------------------------------------------------------------------------
+    def _install_emu(self, extract_folder: Path, version: str):
+        is_gbe = self.target == "gbe"
+        emu = "gbe" if is_gbe else "gse"
+
+        linux_base = APP_FOLDER / emu / version / "Linux"
+        windows_base = APP_FOLDER / emu / version / "Windows"
+        client_base = windows_base / "client"
+        old_base = windows_base / "old"
+        tools_base = TOOLS_FOLDER / f"{emu}_tools" / version
+        tracking_file = APP_FOLDER / emu / f".{emu}_{version}.json"
+        installed_paths = []
+
+        for d in [linux_base, windows_base, client_base, old_base, tools_base]:
+            d.mkdir(parents=True, exist_ok=True)
+
+        def find_file_in_dir(dir_path: Path, filename: str) -> Path | None:
+            if not dir_path.exists():
+                return None
+            target_lower = filename.lower()
+
+            for f in dir_path.iterdir():
+                if f.is_file() and f.name.lower() == target_lower:
+                    return f
+
+            for root, _, files in os.walk(dir_path):
+                for f in files:
+                    if f.lower() == target_lower:
+                        return Path(root) / f
+            return None
+
+        def find_dir(root: Path, name: str) -> Path | None:
+            if not root.exists():
+                return None
+            target_lower = name.lower()
+
+            for d in root.iterdir():
+                if d.is_dir() and d.name.lower() == target_lower:
+                    return d
+
+            for r, dirs, _ in os.walk(root):
+                for d in dirs:
+                    if d.lower() == target_lower:
+                        return Path(r) / d
+            return None
+
+        linux_root = extract_folder / "linux"
+        if linux_root.exists():
+            exp_folder = find_dir(linux_root, "experimental")
+            tools_folder = find_dir(linux_root, "tools")
+
+            if exp_folder:
+                for arch_32 in ["x86", "x32"]:
+                    x86_src = exp_folder / arch_32
+                    if x86_src.exists():
+                        dest = linux_base / "x32"
+                        dest.mkdir(parents=True, exist_ok=True)
+                        for fname in ["libsteam_api.so", "steamclient.so"]:
+                            src = find_file_in_dir(x86_src, fname)
+                            if src:
+                                dest_file = dest / src.name
+                                if dest_file.exists():
+                                    dest_file.unlink()
+                                shutil.copy2(src, dest_file)
+                                src.unlink()
+                                installed_paths.append(str(dest_file))
+                                print(f"✅ Linux x32: {src.name}")
+                        break
+
+                for arch_64 in ["x64", "x86_64"]:
+                    x64_src = exp_folder / arch_64
+                    if x64_src.exists():
+                        dest = linux_base / "x64"
+                        dest.mkdir(parents=True, exist_ok=True)
+                        for fname in ["libsteam_api.so", "steamclient.so"]:
+                            src = find_file_in_dir(x64_src, fname)
+                            if src:
+                                dest_file = dest / src.name
+                                if dest_file.exists():
+                                    dest_file.unlink()
+                                shutil.copy2(src, dest_file)
+                                src.unlink()
+                                installed_paths.append(str(dest_file))
+                                print(f"✅ Linux x64: {src.name}")
+                        break
+
+            if tools_folder:
+                tools_src = tools_folder / "generate_interfaces"
+                if tools_src.exists():
+                    for fname in ["generate_interfaces_x32", "generate_interfaces_x86", "generate_interfaces_x64"]:
+                        src = find_file_in_dir(tools_src, fname)
+                        if src:
+                            dest_file = tools_base / src.name
+                            if dest_file.exists():
+                                dest_file.unlink()
+                            shutil.copy2(src, dest_file)
+                            src.unlink()
+                            installed_paths.append(str(dest_file))
+                            try:
+                                os.chmod(dest_file, 0o755)
+                            except:
+                                pass
+                            print(f"✅ Linux tool: {src.name}")
+
+        windows_root = extract_folder / "windows"
+        if windows_root.exists():
+            sc_src = find_dir(windows_root, "steamclient_experimental")
+            old_src = find_dir(windows_root, "steam_old_lib")
+            exp_folder = find_dir(windows_root, "experimental")
+            tools_folder = find_dir(windows_root, "tools")
+
+            if sc_src and sc_src.exists():
+                for fname in ["GameOverlayRenderer.dll", "GameOverlayRenderer64.dll", "steamclient.dll", "steamclient64.dll", "steamclient_loader_x32.exe", "steamclient_loader_x86.exe", "steamclient_loader_x64.exe", "ColdClientLoader.ini"]:
+                    src = find_file_in_dir(sc_src, fname)
+                    if src:
+                        dest_file = client_base / src.name
+                        if dest_file.exists():
+                            dest_file.unlink()
+                        shutil.copy2(src, dest_file)
+                        src.unlink()
+                        installed_paths.append(str(dest_file))
+                        print(f"✅ Windows client: {src.name}")
+
+                extra_src = sc_src / "extra_dlls"
+                if extra_src.exists():
+                    dest_extra = client_base / "extra_dlls"
+                    dest_extra.mkdir(parents=True, exist_ok=True)
+                    for fname in ["steamclient_extra_x64.dll", "steamclient_extra_x32.dll", "steamclient_extra_x86.dll"]:
+                        src = find_file_in_dir(extra_src, fname)
+                        if src:
+                            dest_file = dest_extra / src.name
+                            if dest_file.exists():
+                                dest_file.unlink()
+                            shutil.copy2(src, dest_file)
+                            src.unlink()
+                            installed_paths.append(str(dest_file))
+                            print(f"✅ Windows extra_dll: {src.name}")
+
+            if old_src and old_src.exists():
+                src = find_file_in_dir(old_src, "Steam.dll")
+                if src:
+                    dest_file = old_base / src.name
+                    if dest_file.exists():
+                        dest_file.unlink()
+                    shutil.copy2(src, dest_file)
+                    src.unlink()
+                    installed_paths.append(str(dest_file))
+                    print(f"✅ Windows old lib: {src.name}")
+
+            if exp_folder and exp_folder.exists():
+                for arch_32 in ["x86", "x32"]:
+                    x86_src = exp_folder / arch_32
+                    if x86_src.exists():
+                        dest = windows_base / "x32"
+                        dest.mkdir(parents=True, exist_ok=True)
+                        for fname in ["steam_api.dll", "steamclient.dll"]:
+                            src = find_file_in_dir(x86_src, fname)
+                            if src:
+                                dest_file = dest / src.name
+                                if dest_file.exists():
+                                    dest_file.unlink()
+                                shutil.copy2(src, dest_file)
+                                src.unlink()
+                                installed_paths.append(str(dest_file))
+                                print(f"✅ Windows x32: {src.name}")
+                        break
+
+                for arch_64 in ["x64", "x86_64"]:
+                    x64_src = exp_folder / arch_64
+                    if x64_src.exists():
+                        dest = windows_base / "x64"
+                        dest.mkdir(parents=True, exist_ok=True)
+                        for fname in ["steam_api64.dll", "steamclient64.dll"]:
+                            src = find_file_in_dir(x64_src, fname)
+                            if src:
+                                dest_file = dest / src.name
+                                if dest_file.exists():
+                                    dest_file.unlink()
+                                shutil.copy2(src, dest_file)
+                                src.unlink()
+                                installed_paths.append(str(dest_file))
+                                print(f"✅ Windows x64: {src.name}")
+                        break
+
+            if tools_folder:
+                tools_src = tools_folder / "generate_interfaces"
+                if tools_src.exists():
+                    for fname in ["generate_interfaces_x64.exe", "generate_interfaces_x32.exe", "generate_interfaces_x86.exe"]:
+                        src = find_file_in_dir(tools_src, fname)
+                        if src:
+                            dest_file = tools_base / src.name
+                            if dest_file.exists():
+                                dest_file.unlink()
+                            shutil.copy2(src, dest_file)
+                            src.unlink()
+                            installed_paths.append(str(dest_file))
+                            print(f"✅ Windows tool: {src.name}")
+
+            try:
+                tracking_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(tracking_file, "w", encoding="utf-8") as f:
+                    json.dump(installed_paths, f, indent=2)
+                print(f"📝 Saved file: {tracking_file}")
+            except Exception as e:
+                print(f"⚠️ Failed to save path file: {e}")
+
+    def _update_status(self, version: str, status: str):
+        if version not in self.download_status:
+            self.download_status[version] = {'status': status}
+            return
+
+        self.download_status[version]['status'] = status
+
+        if (self.ui and
+            version in self.download_status and
+            self.download_status[version].get('status_frame') is not None):
+            self.ui.after(0, lambda v=version, s=status: self._update_ui_status(v, s))
+
+            self.download_status[version]['status'] = status
+            if self.ui:
+                self.ui.after(0, lambda v=version, s=status: self._update_ui_status(v, s))
+
+    def _update_ui_status(self, version: str, status: str):
+        if version not in self.download_status:
+            return
+
+        entry = self.download_status[version]
+
+        if entry.get('status_frame') is None or not entry['status_frame'].winfo_exists():
+            return
+
+        theme = self.ui.DARK_THEME if self.ui.dark_mode else self.ui.LIGHT_THEME
+
+        for widget in entry['status_frame'].winfo_children():
+            widget.destroy()
+
+        if status == 'pending':
+            download_btn = Button(
+                entry['status_frame'],
+                text="⬇️",
+                command=lambda v=version: self.download_and_install(v, {}),
+                bg=theme['button_bg'],
+                fg=theme['fg'],
+                bd=0,
+                relief='flat',
+                padx=5,
+                pady=2
+            )
+            download_btn.pack(side="left")
+            entry['download_btn'] = download_btn
+
+        elif status in ['queued', 'downloading', 'extracting']:
+            Label(
+                entry['status_frame'],
+                text="⏳",
+                bg=theme['bg'],
+                fg=theme['fg']
+            ).pack(side="left")
+
+            cancel_btn = Button(
+                entry['status_frame'],
+                text="❌",
+                command=lambda v=version: self.cancel_download(v),
+                bg=theme['button_bg'],
+                fg=theme['fg'],
+                bd=0,
+                relief='flat',
+                padx=5,
+                pady=2
+            )
+            cancel_btn.pack(side="left")
+            entry['cancel_btn'] = cancel_btn
+
+        elif status == 'completed':
+            check_label = Label(
+                entry['status_frame'],
+                text="✅",
+                bg=theme['bg'],
+                fg=theme['fg']
+            )
+            check_label.pack(side="left")
+            entry['check_label'] = check_label
+
+            delete_btn = Button(
+                entry['status_frame'],
+                text="❌",
+                command=lambda v=version: self.delete_version(v),
+                bg=theme['button_bg'],
+                fg=theme['fg'],
+                bd=0,
+                relief='flat',
+                padx=5,
+                pady=2
+            )
+            delete_btn.pack(side="left")
+            entry['delete_btn'] = delete_btn
+
+        elif status == 'error':
+            Label(
+                entry['status_frame'],
+                text="❌",
+                bg=theme['bg'],
+                fg=theme['fg']
+            ).pack(side="left")
+
+            retry_btn = Button(
+                entry['status_frame'],
+                text="↻",
+                command=lambda v=version: self.download_and_install(v, {}),
+                bg=theme['button_bg'],
+                fg=theme['fg'],
+                bd=0,
+                relief='flat',
+                padx=5,
+                pady=2
+            )
+            retry_btn.pack(side="left")
+            entry['retry_btn'] = retry_btn
+
+    def cancel_download(self, version: str):
+        if version not in self.download_status:
+            return
+
+        if self.download_status[version]['status'] in ['downloading', 'extracting']:
+            self.download_status[version]['status'] = 'cancelled'
+            self._update_status(version, 'pending')
+
+        elif self.download_status[version]['status'] == 'queued':
+            self.download_queue = [v for v in self.download_queue if v != version]
+            self._update_status(version, 'pending')
+
+    def delete_version(self, version: str):
+        if not _gui_yes_no(f"Are you sure you want to delete {self.config['name']} {version}?"):
+            return
+
+        emu = "gbe" if self.target == "gbe" else "gse"
+        tracking_file = APP_FOLDER / emu / f".{emu}_{version}.json"
+
+        try:
+            tracked_files = []
+            if tracking_file.exists():
+                with open(tracking_file, "r", encoding="utf-8") as f:
+                    tracked_files = json.load(f)
+            for file_path in tracked_files:
+                path = Path(file_path)
+                if path.exists():
+                    path.unlink()
+                    print(f"🗑️ Deleted file: {path}")
+
+            version_dir = self._get_version_dir(version)
+            if version_dir.exists():
+                shutil.rmtree(version_dir, ignore_errors=True)
+
+            linux_dl = DOWNLOADS_FOLDER / "linux" / version
+            windows_dl = DOWNLOADS_FOLDER / "windows" / version
+            for d in [linux_dl, windows_dl]:
+                if d.exists():
+                    shutil.rmtree(d, ignore_errors=True)
+
+            tools_dir = self.config["tools_dir"] / version
+            if tools_dir.exists():
+                shutil.rmtree(tools_dir, ignore_errors=True)
+
+            if tracking_file.exists():
+                tracking_file.unlink()
+                print(f"🗑️ Deleted file: {tracking_file}")
+
+            mark_version_installed(self.target, version, False)
+            if version in self.download_status:
+                entry = self.download_status[version]
+                entry['status'] = 'pending'
+
+                if entry.get('status_frame') and entry['status_frame'].winfo_exists():
+                    for widget in entry['status_frame'].winfo_children():
+                        widget.destroy()
+
+                    theme = self.ui.DARK_THEME if self.ui.dark_mode else self.ui.LIGHT_THEME
+                    download_btn = Button(
+                        entry['status_frame'],
+                        text="⬇️",
+                        command=lambda v=version: self.download_and_install(v, {}),
+                        bg=theme['button_bg'],
+                        fg=theme['fg'],
+                        bd=0,
+                        relief='flat',
+                        padx=5,
+                        pady=2
+                    )
+                    download_btn.pack(side="left")
+                    entry['download_btn'] = download_btn
+                    entry['delete_btn'] = None
+                    entry['check_label'] = None
+
+        except Exception as e:
+            print(f"❌ Error deleting {version}: {e}")
+
+    def add_version_to_ui(self, version: str, release_data: dict, parent_frame: Frame, theme: dict):
+        version_frame = Frame(parent_frame, bg=theme['bg'])
+        version_frame.pack(fill="x", pady=2, padx=5)
+
+        version_label = Label(
+            version_frame,
+            text=f"{release_data.get('name', version)} ({version})",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 11),
+            anchor="w"
+        )
+        version_label.pack(side="left", fill="x", expand=True)
+
+        status_frame = Frame(version_frame, bg=theme['bg'])
+        status_frame.pack(side="right")
+
+        is_installed = self.is_installed(version)
+        status = 'completed' if is_installed else 'pending'
+
+        download_btn = None
+        if not is_installed:
+            download_btn = Button(
+                status_frame,
+                text="⬇️",
+                command=lambda v=version: self.download_and_install(v, release_data),
+                bg=theme['button_bg'],
+                fg=theme['fg'],
+                bd=0,
+                relief='flat',
+                padx=5,
+                pady=2
+            )
+            download_btn.pack(side="left")
+
+        elif is_installed:
+            check_label = Label(
+                status_frame,
+                text="✅",
+                bg=theme['bg'],
+                fg=theme['fg']
+            )
+            check_label.pack(side="left")
+
+            delete_btn = Button(
+                status_frame,
+                text="❌",
+                command=lambda v=version: self.delete_version(v),
+                bg=theme['button_bg'],
+                fg=theme['fg'],
+                bd=0,
+                relief='flat',
+                padx=5,
+                pady=2
+            )
+            delete_btn.pack(side="left")
+
+        entry = {
+            'status': status,
+            'version': version,
+            'frame': version_frame,
+            'version_label': version_label,
+            'status_frame': status_frame,
+            'download_btn': download_btn,
+            'check_label': check_label if is_installed else None,
+            'delete_btn': delete_btn if is_installed else None,
+        }
+
+        self.download_status[version] = entry
+        return entry
+
+# ------------------------------------------------------------
 class WatcherUI(tk.Tk):
     DARK_THEME = {
         'bg': '#2d2d2d',
@@ -2136,6 +2723,15 @@ class WatcherUI(tk.Tk):
         self.style.configure('TCombobox', fieldbackground=theme['widget_bg'], background=theme['widget_bg'], foreground=theme['fg'])
         self.style.map('TCombobox', fieldbackground=[('readonly', theme['widget_bg'])], selectbackground=[('readonly', theme['widget_bg'])], selectforeground=[('readonly', theme['fg'])], arrowcolor=[('readonly', theme['fg'])])
         self.search_mode_dropdown.config(background=theme['widget_bg'], foreground=theme['fg'])
+
+        for target, manager in self.download_managers.items():
+            for version, entry in manager.download_status.items():
+                if 'status_frame' in entry and entry['status_frame'].winfo_exists():
+                    for widget in entry['status_frame'].winfo_children():
+                        if isinstance(widget, Button):
+                            widget.config(bg=theme['button_bg'], fg=theme['fg'])
+                        elif isinstance(widget, Label):
+                            widget.config(bg=theme['bg'], fg=theme['fg'])
 
         def update_widget_colors(widget):
             try:
@@ -2268,28 +2864,14 @@ class WatcherUI(tk.Tk):
         query = self.search_entry.get().lower()
         print(f"Searching for: {query}")
 
-    def _toggle_auto_update(self, target='app'):
-        if target == 'gbe':
-            self.general_settings.set("auto_update_gbe", self.auto_update_gbe_var.get())
-        elif target == 'gse':
-            self.general_settings.set("auto_update_gse", self.auto_update_gse_var.get())
-        else:
-            self.general_settings.set("auto_update", self.auto_update_var.get())
-        
+    def _toggle_auto_update(self):
+        self.general_settings.set("auto_update", self.auto_update_var.get())
         self._update_manual_btn_visibility()
 
     def _update_manual_btn_visibility(self):
         auto_update = self.general_settings.get("auto_update", True)
         self.manual_update_btn.config(state=tk.DISABLED if auto_update else tk.NORMAL)
         self.downgrade_btn.config(state=tk.NORMAL if not auto_update else tk.DISABLED)
-
-        auto_update_gbe = self.general_settings.get("auto_update_gbe", True)
-        self.manual_update_gbe_btn.config(state=tk.DISABLED if auto_update_gbe else tk.NORMAL)
-        self.downgrade_gbe_btn.config(state=tk.NORMAL if not auto_update_gbe else tk.DISABLED)
-        
-        auto_update_gse = self.general_settings.get("auto_update_gse", True)
-        self.manual_update_gse_btn.config(state=tk.DISABLED if auto_update_gse else tk.NORMAL)
-        self.downgrade_gse_btn.config(state=tk.NORMAL if not auto_update_gse else tk.DISABLED)
 
     def toggle_settings_menu(self):
         if self.settings_frame.winfo_ismapped():
@@ -2322,7 +2904,7 @@ class WatcherUI(tk.Tk):
         except Exception as e:
             print(f"⚠️ Error deleting encryption key file: {e}")
 
-    def _populate_steamless_tab(self, parent_frame, theme):
+    def _populate_download_tab(self, target: str, parent_frame: Frame, theme: dict):
         for widget in parent_frame.winfo_children():
             widget.destroy()
 
@@ -2333,22 +2915,22 @@ class WatcherUI(tk.Tk):
         container_canvas.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side="right", fill="y")
         container_canvas.pack(side="left", fill="both", expand=True)
-        steamless_container = Frame(container_canvas, bg=theme['bg'])
-        self.steamless_window_id = container_canvas.create_window((0, 0), window=steamless_container, anchor="nw")
+        container = Frame(container_canvas, bg=theme['bg'])
+        window_id = container_canvas.create_window((0, 0), window=container, anchor="nw")
 
         def _configure_container(event):
             container_canvas.configure(scrollregion=container_canvas.bbox("all"))
 
         def _configure_canvas(event):
-            if self.steamless_window_id:
-                container_canvas.itemconfig(self.steamless_window_id, width=event.width)
+            if window_id:
+                container_canvas.itemconfig(window_id, width=event.width)
 
-        steamless_container.bind("<Configure>", _configure_container)
+        container.bind("<Configure>", _configure_container)
         container_canvas.bind("<Configure>", _configure_canvas)
 
         title = Label(
-            steamless_container,
-            text="Steamless Versions",
+            container,
+            text=f"{self.download_managers[target].config['name']} Versions",
             font=("Helvetica", 14, "bold"),
             bg=theme['bg'],
             fg=theme['fg']
@@ -2356,396 +2938,55 @@ class WatcherUI(tk.Tk):
         title.pack(pady=10)
 
         info_label = Label(
-            steamless_container,
-            text="Download and manage Steamless versions",
+            container,
+            text=f"Download and manage {self.download_managers[target].config['name']} versions",
             bg=theme['bg'],
             fg=theme['fg'],
             font=("Helvetica", 10)
         )
         info_label.pack(pady=(0, 10))
 
-        self.steamless_releases_frame = Frame(steamless_container, bg=theme['bg'])
-        self.steamless_releases_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        releases_frame = Frame(container, bg=theme['bg'])
+        releases_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
-        if not hasattr(self, 'steamless_download_queue'):
-            self.steamless_download_queue = []
-            self.steamless_current_download = None
-            self.steamless_download_status = {}
-
-        if not self.steamless_releases_loaded:
-            loading_label = Label(
-                self.steamless_releases_frame,
-                text="Click this tab to load releases from GitHub",
-                bg=theme['bg'],
-                fg=theme['fg']
-            )
-            loading_label.pack(pady=20)
-
-    def _fetch_steamless_releases(self, theme):
-        self.steamless_releases_loaded = True
-        def fetch_and_display():
-            try:
-                response = requests.get("https://api.github.com/repos/atom0s/Steamless/releases", timeout=10)
-                response.raise_for_status()
-                releases = response.json()
-
-                self.after(0, lambda: self._clear_steamless_releases())
-                releases.sort(key=lambda x: x.get('tag_name', ''), reverse=True)
-
-                for release in releases:
-                    tag_name = release.get('tag_name', '')
-                    name = release.get('name', tag_name)
-                    self.after(0, lambda v=tag_name, n=name, r=release: self._add_steamless_release(v, n, r, theme))
-
-            except Exception as e:
-                print(f"Error fetching Steamless releases: {e}")
-                self.after(0, lambda e=e, t=theme: self._show_steamless_error(e, t))
-
-        threading.Thread(target=fetch_and_display, daemon=True).start()
-
-    def _clear_steamless_releases(self):
-        if hasattr(self, 'steamless_releases_frame'):
-            for widget in self.steamless_releases_frame.winfo_children():
-                widget.destroy()
-        self.steamless_download_status.clear()
-
-    def _show_steamless_error(self, error, theme):
-        error_label = Label(
-            self.steamless_releases_frame,
-            text=f"Failed to fetch releases: {error}",
+        loading_label = Label(
+            releases_frame,
+            text="Loading releases...",
             bg=theme['bg'],
             fg=theme['fg']
         )
-        error_label.pack(pady=10)
+        loading_label.pack(pady=20)
 
-    def _add_steamless_release(self, version, name, release_data, theme):
-        release_frame = Frame(self.steamless_releases_frame, bg=theme['bg'])
-        release_frame.pack(fill="x", pady=2, padx=5)
-
-        version_label = Label(
-            release_frame,
-            text=f"{name} ({version})",
-            bg=theme['bg'],
-            fg=theme['fg'],
-            font=("Helvetica", 11),
-            anchor="w"
+        self.download_managers[target].fetch_releases(
+            callback=lambda releases: self._populate_download_versions(target, releases, releases_frame, theme)
         )
-        version_label.pack(side="left", fill="x", expand=True)
 
-        status_frame = Frame(release_frame, bg=theme['bg'])
-        status_frame.pack(side="right")
-
-        download_btn = Button(
-            status_frame,
-            text="⬇️",
-            command=lambda v=version: self._download_steamless_version(v),
-            bg=theme['button_bg'],
-            fg=theme['fg'],
-            bd=0,
-            relief='flat',
-            padx=5,
-            pady=2
-        )
-        download_btn.pack(side="left")
-
-        download_url = None
-        for asset in release_data.get('assets', []):
-            if asset.get('name', '').endswith('.zip'):
-                download_url = asset.get('browser_download_url')
-                break
-
-        self.steamless_download_status[version] = {
-            'status': 'pending',
-            'version': version,
-            'name': name,
-            'frame': release_frame,
-            'version_label': version_label,
-            'status_frame': status_frame,
-            'download_btn': download_btn,
-            'cancel_btn': None,
-            'check_label': None,
-            'download_url': download_url
-        }
-
-    def _download_steamless_version(self, version):
-        if version not in self.steamless_download_status:
-            return
-
-        entry = self.steamless_download_status[version]
-        current_status = entry['status']
-
-        if current_status == 'completed':
-            if _gui_yes_no(f"Steamless {version} is already downloaded. Redownload?"):
-                self._delete_steamless_version_files(version)
-                entry['status'] = 'pending'
-                self._update_steamless_download_status(version, 'pending')
-            return
-
-        if current_status in ['queued', 'downloading', 'extracting']:
-            return
-
-        self.steamless_download_queue.append({'version': version})
-        entry['status'] = 'queued'
-        self._update_steamless_download_status(version, 'queued')
-
-        if not self.steamless_current_download:
-            self._process_steamless_queue()
-
-    def _process_steamless_queue(self):
-        if not self.steamless_download_queue or self.steamless_current_download:
-            return
-
-        next_item = self.steamless_download_queue.pop(0)
-        version = next_item['version']
-
-        self.steamless_current_download = version
-        self._update_steamless_download_status(version, 'downloading')
-
-        threading.Thread(
-            target=self._download_and_extract_steamless,
-            args=(version,),
-            daemon=True
-        ).start()
-
-    def _download_and_extract_steamless(self, version):
-        try:
-            if self.steamless_download_status.get(version, {}).get('status') == 'cancelled':
-                self._update_steamless_download_status(version, 'pending')
-                return
-
-            DOWNLOADS_FOLDER.mkdir(parents=True, exist_ok=True)
-            entry = self.steamless_download_status.get(version, {})
-            download_url = entry.get('download_url')
-
-            if not download_url:
-                download_url = f"https://github.com/atom0s/Steamless/releases/download/{version}/Steamless.{version}.by.atom0s.zip"
-
-            zip_filename = download_url.split('/')[-1]
-            zip_path = DOWNLOADS_FOLDER / zip_filename
-            self._update_steamless_download_status(version, 'downloading')
-            response = requests.get(download_url, stream=True, timeout=30)
-            response.raise_for_status()
-
-            with open(zip_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        if self.steamless_download_status.get(version, {}).get('status') == 'cancelled':
-                            f.close()
-                            if zip_path.exists():
-                                zip_path.unlink(missing_ok=True)
-                            self._update_steamless_download_status(version, 'pending')
-                            return
-
-            if self.steamless_download_status.get(version, {}).get('status') == 'cancelled':
-                if zip_path.exists():
-                    zip_path.unlink(missing_ok=True)
-                self._update_steamless_download_status(version, 'pending')
-                return
-
-            extract_folder = DOWNLOADS_FOLDER / zip_path.stem
-            extract_folder.mkdir(parents=True, exist_ok=True)
-            self._update_steamless_download_status(version, 'extracting')
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_folder)
-
-            if self.steamless_download_status.get(version, {}).get('status') == 'cancelled':
-                if zip_path.exists():
-                    zip_path.unlink(missing_ok=True)
-                if extract_folder.exists():
-                    shutil.rmtree(extract_folder, ignore_errors=True)
-                self._update_steamless_download_status(version, 'pending')
-                return
-
-            if not any(extract_folder.iterdir()):
-                extract_folder = DOWNLOADS_FOLDER
-                print(f"⚠️ Files extracted directly to {DOWNLOADS_FOLDER}, searching there...")
-
-            steamless_dir = APP_FOLDER / "steamless"
-            steamless_dir.mkdir(parents=True, exist_ok=True)
-            version_dir = steamless_dir / version
-            if version_dir.exists():
-                shutil.rmtree(version_dir, ignore_errors=True)
-            version_dir.mkdir(parents=True, exist_ok=True)
-
-            found_files = {
-                'Steamless.CLI.exe': None,
-                'Steamless.CLI.exe.config': None,
-                'plugins': []
-            }
-
-            for root, dirs, files in os.walk(extract_folder):
-                for file in files:
-                    if file == "Steamless.CLI.exe":
-                        found_files['Steamless.CLI.exe'] = Path(root) / file
-                    elif file == "Steamless.CLI.exe.config":
-                        found_files['Steamless.CLI.exe.config'] = Path(root) / file
-                    elif file.endswith('.dll'):
-                        found_files['plugins'].append(Path(root) / file)
-
-            if found_files['Steamless.CLI.exe']:
-                shutil.move(str(found_files['Steamless.CLI.exe']), str(version_dir / "Steamless.CLI.exe"))
-            if found_files['Steamless.CLI.exe.config']:
-                shutil.move(str(found_files['Steamless.CLI.exe.config']), str(version_dir / "Steamless.CLI.exe.config"))
-            for dll in found_files['plugins']:
-                shutil.move(str(dll), str(version_dir / dll.name))
-
-            if zip_path.exists():
-                zip_path.unlink(missing_ok=True)
-            if extract_folder.exists() and extract_folder != DOWNLOADS_FOLDER:
-                shutil.rmtree(extract_folder, ignore_errors=True)
-
-            self._update_steamless_download_status(version, 'completed')
-
-        except Exception as e:
-            print(f"Error downloading/extracting Steamless {version}: {e}")
-            self._update_steamless_download_status(version, 'error')
-        finally:
-            self.steamless_current_download = None
-            self._process_steamless_queue()
-
-    def _update_steamless_download_status(self, version, status):
-        if version not in self.steamless_download_status:
-            return
-
-        self.steamless_download_status[version]['status'] = status
-        self.after(0, lambda v=version, s=status: self._update_steamless_ui_for_version(v, s))
-
-    def _update_steamless_ui_for_version(self, version, status):
-        if version not in self.steamless_download_status:
-            return
-
-        entry = self.steamless_download_status[version]
-        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
-
-        for widget in entry['status_frame'].winfo_children():
+    def _populate_download_versions(self, target: str, releases: list, parent_frame: Frame, theme: dict):
+        for widget in parent_frame.winfo_children():
             widget.destroy()
 
-        if status == 'pending':
-            download_btn = Button(
-                entry['status_frame'],
-                text="⬇️",
-                command=lambda v=version: self._download_steamless_version(v),
-                bg=theme['button_bg'],
-                fg=theme['fg'],
-                bd=0,
-                relief='flat',
-                padx=5,
-                pady=2
-            )
-            download_btn.pack(side="left")
-            entry['download_btn'] = download_btn
-            entry['cancel_btn'] = None
-            entry['check_label'] = None
+        manager = self.download_managers[target]
+        config = manager.config
 
-        elif status in ['queued', 'downloading', 'extracting']:
-            Label(
-                entry['status_frame'],
-                text="⏳",
-                bg=theme['bg'],
-                fg=theme['fg']
-            ).pack(side="left")
+        for release in releases:
+            version = release.get('tag_name', '')
+            if not version:
+                continue
 
-            cancel_btn = Button(
-                entry['status_frame'],
-                text="❌",
-                command=lambda v=version: self._cancel_steamless_download(v),
-                bg=theme['button_bg'],
-                fg=theme['fg'],
-                bd=0,
-                relief='flat',
-                padx=5,
-                pady=2
-            )
-            cancel_btn.pack(side="left")
-            entry['cancel_btn'] = cancel_btn
-            entry['download_btn'] = None
-            entry['check_label'] = None
+            if target in ["gbe", "gse"]:
+                has_assets = False
+                for asset in release.get('assets', []):
+                    if any(re.search(p, asset['name'], re.I) for p in config["asset_patterns"]):
+                        has_assets = True
+                        break
+                if not has_assets:
+                    continue
 
-        elif status == 'completed':
-            check_label = Label(
-                entry['status_frame'],
-                text="✅",
-                bg=theme['bg'],
-                fg=theme['fg']
-            )
-            check_label.pack(side="left")
-            entry['check_label'] = check_label
+            manager.add_version_to_ui(version, release, parent_frame, theme)
 
-            cancel_btn = Button(
-                entry['status_frame'],
-                text="❌",
-                command=lambda v=version: self._cancel_steamless_download(v),
-                bg=theme['button_bg'],
-                fg=theme['fg'],
-                bd=0,
-                relief='flat',
-                padx=5,
-                pady=2
-            )
-            cancel_btn.pack(side="left")
-            entry['cancel_btn'] = cancel_btn
-            entry['download_btn'] = None
+        self.dlm_releases_loaded[target] = True
 
-        elif status == 'error':
-            Label(
-                entry['status_frame'],
-                text="❌",
-                bg=theme['bg'],
-                fg=theme['fg']
-            ).pack(side="left")
-
-            retry_btn = Button(
-                entry['status_frame'],
-                text="↻",
-                command=lambda v=version: self._download_steamless_version(v),
-                bg=theme['button_bg'],
-                fg=theme['fg'],
-                bd=0,
-                relief='flat',
-                padx=5,
-                pady=2
-            )
-            retry_btn.pack(side="left")
-            entry['download_btn'] = retry_btn
-            entry['cancel_btn'] = None
-            entry['check_label'] = None
-
-    def _cancel_steamless_download(self, version):
-        if version not in self.steamless_download_status:
-            return
-
-        entry = self.steamless_download_status[version]
-        current_status = entry['status']
-
-        if current_status in ['downloading', 'extracting']:
-            entry['status'] = 'cancelled'
-            self._update_steamless_download_status(version, 'pending')
-        elif current_status == 'completed':
-            self._delete_steamless_version_files(version)
-            self._update_steamless_download_status(version, 'pending')
-        elif current_status == 'queued':
-            self.steamless_download_queue = [item for item in self.steamless_download_queue if item['version'] != version]
-            self._update_steamless_download_status(version, 'pending')
-
-    def _delete_steamless_version_files(self, version):
-        try:
-            steamless_dir = APP_FOLDER / "steamless"
-            version_dir = steamless_dir / version
-            if version_dir.exists():
-                shutil.rmtree(version_dir, ignore_errors=True)
-
-            download_pattern = f"Steamless.{version}.by.atom0s*"
-            for item in DOWNLOADS_FOLDER.glob(download_pattern):
-                if item.is_file():
-                    item.unlink(missing_ok=True)
-                elif item.is_dir():
-                    shutil.rmtree(item, ignore_errors=True)
-
-        except Exception as e:
-            print(f"Error deleting Steamless {version} files: {e}")
-
-    def _on_steamless_tab_selected(self, event=None):
+    def _on_download_tab_selected(self, event=None):
         if not hasattr(self, 'settings_frame') or not self.settings_frame.winfo_ismapped():
             return
 
@@ -2758,17 +2999,30 @@ class WatcherUI(tk.Tk):
             return
 
         try:
-            current_tab_text = tablist.tab(tablist.index("current"), "text")
+            current_tab_index = tablist.index("current")
+            current_tab_text = tablist.tab(current_tab_index, "text")
         except:
             return
 
-        if current_tab_text == "Steamless Config" and not self.steamless_releases_loaded:
-            self.steamless_releases_loaded = True
-            theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
-            for widget in self.steamless_releases_frame.winfo_children():
-                widget.destroy()
-            self._fetch_steamless_releases(theme)
+        tab_info = {
+            "GBE Config": ("gbe", self.gbe_tab),
+            "GSE Config": ("gse", self.gse_tab),
+            "Steamless Config": ("steamless", self.steamless_tab)
+        }
 
+        info = tab_info.get(current_tab_text)
+        if not info:
+            return
+
+        target, tab_frame = info
+        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+
+        for w in tab_frame.winfo_children():
+            w.destroy()
+
+        self._populate_download_tab(target, tab_frame, theme)
+
+# ------------------------------------------------------------
     def populate_settings(self):
         for widget in self.settings_frame.winfo_children():
             widget.destroy()
@@ -2857,79 +3111,8 @@ class WatcherUI(tk.Tk):
             state=tk.NORMAL if not self.auto_update_var.get() else tk.DISABLED
         )
         self.downgrade_btn.pack(side="right", padx=5)
+
 #---------------------------------------------------------------------------------------------------------------------------
-        gbe_frame = Frame(general_container, bg=theme['bg'])
-        gbe_frame.pack(fill="x", pady=5)
-    
-        self.auto_update_gbe_var = tk.BooleanVar(value=self.general_settings.get("auto_update_gbe", True))
-        Checkbutton(
-            gbe_frame,
-            text="Automatic Update GBE",
-            variable=self.auto_update_gbe_var,
-            command=lambda: self._toggle_auto_update(target='gbe'),
-            bg=theme['bg'],
-            fg=theme['fg'],
-            activebackground=theme['bg'],
-            activeforeground=theme['fg'],
-            selectcolor=theme['widget_bg']
-        ).pack(side="left", padx=5)
-    
-        self.manual_update_gbe_btn = Button(
-            gbe_frame,
-            text="Manual Update",
-            command=lambda: threading.Thread(target=check_for_updates, args=(True, 'gbe'), daemon=True).start(),
-            bg=theme['button_bg'],
-            fg=theme['fg'],
-            state=tk.NORMAL if not self.auto_update_gbe_var.get() else tk.DISABLED
-        )
-        self.manual_update_gbe_btn.pack(side="right", padx=5)
-
-        self.downgrade_gbe_btn = Button(
-            gbe_frame,
-            text="Downgrade",
-            command=lambda: self.downgrader("gbe"),
-            bg=theme['button_bg'],
-            fg=theme['fg'],
-            state=tk.NORMAL if not self.auto_update_gbe_var.get() else tk.DISABLED
-        )
-        self.downgrade_gbe_btn.pack(side="right", padx=5)
-#---------------------------------------------------------------------------------------------------------------------------
-        gse_frame = Frame(general_container, bg=theme['bg'])
-        gse_frame.pack(fill="x", pady=5)
-    
-        self.auto_update_gse_var = tk.BooleanVar(value=self.general_settings.get("auto_update_gse", True))
-        Checkbutton(
-            gse_frame,
-            text="Automatic Update GSE",
-            variable=self.auto_update_gse_var,
-            command=lambda: self._toggle_auto_update(target='gse'),
-            bg=theme['bg'],
-            fg=theme['fg'],
-            activebackground=theme['bg'],
-            activeforeground=theme['fg'],
-            selectcolor=theme['widget_bg']
-        ).pack(side="left", padx=5)
-    
-        self.manual_update_gse_btn = Button(
-            gse_frame,
-            text="Manual Update",
-            command=lambda: threading.Thread(target=check_for_updates, args=(True, 'gse'), daemon=True).start(),
-            bg=theme['button_bg'],
-            fg=theme['fg'],
-            state=tk.NORMAL if not self.auto_update_gse_var.get() else tk.DISABLED
-        )
-        self.manual_update_gse_btn.pack(side="right", padx=5)
-
-        self.downgrade_gse_btn = Button(
-            gse_frame,
-            text="Downgrade",
-            command=lambda: self.downgrader("gse"),
-            bg=theme['button_bg'],
-            fg=theme['fg'],
-            state=tk.NORMAL if not self.auto_update_gse_var.get() else tk.DISABLED
-        )
-        self.downgrade_gse_btn.pack(side="right", padx=5)
-
         prompt_label = Label(
             general_container,
             text="Prompt Settings",
@@ -3114,10 +3297,13 @@ class WatcherUI(tk.Tk):
         self.steam_apik_del.pack(side="right", padx=5)
 
 #---------------------------------------------------------------------------------------------------------------------------
+        self.gbe_tab = Frame(tablist, bg=theme['bg'])
+        tablist.add(self.gbe_tab, text="GBE Config")
+        self.gse_tab = Frame(tablist, bg=theme['bg'])
+        tablist.add(self.gse_tab, text="GSE Config")
         self.steamless_tab = Frame(tablist, bg=theme['bg'])
         tablist.add(self.steamless_tab, text="Steamless Config")
-        tablist.bind("<<NotebookTabChanged>>", self._on_steamless_tab_selected)
-        self._populate_steamless_tab(self.steamless_tab, theme)
+        tablist.bind("<<NotebookTabChanged>>", self._on_download_tab_selected)
 
 #---------------------------------------------------------------------------------------------------------------------------
         self.user_tab = Frame(tablist, bg=theme['bg'])
@@ -3212,7 +3398,7 @@ class WatcherUI(tk.Tk):
         self._toggle_config_fields()
         self.settings_btn.lift()
 
-    def downgrader(self, target: str = "gbe"):
+    def downgrader(self, target: str = "app"):
         if target == "app":
             save_update_check_time()
 
@@ -3302,56 +3488,6 @@ class WatcherUI(tk.Tk):
             except Exception as e:
                 messagebox.showerror("Downgrade Failed", str(e))
 
-        elif target in ["gbe", "gse"]:
-            if not _gui_yes_no(f"Do you want to downgrade {target.upper()} files?"):
-                return
-
-            if target == "gbe":
-                target_folders = [GBE_TOOLS_FOLDER, GBE_FOLDER]
-            else:
-                target_folders = [GSE_TOOLS_FOLDER, GSE_FOLDER]
-
-            backups_exist = False
-            for folder in target_folders:
-                if folder.exists():
-                    for file_path in folder.rglob('*.bak'):
-                        backups_exist = True
-                        break
-                if backups_exist:
-                    break
-
-            if not backups_exist:
-                messagebox.showinfo("Downgrade", "No backups were located")
-                return
-
-            if not _gui_yes_no(f"Do you want to downgrade {target.upper()} files?"):
-                return
-
-            try:
-                for folder in target_folders:
-                    if not folder.exists():
-                        continue
-                    for file_path in folder.rglob('*'):
-                        if file_path.is_file() and not file_path.name.endswith('.bak'):
-                            try:
-                                file_path.unlink()
-                            except Exception as e:
-                                print(f"Error removing {file_path}: {e}")
-
-                    for file_path in folder.rglob('*.bak'):
-                        try:
-                            new_name = file_path.with_name(file_path.name[:-4])
-                            file_path.rename(new_name)
-                        except Exception as e:
-                            print(f"Error restoring {file_path}: {e}")
-
-                version_file = GBE_VERSION_FILE if target == "gbe" else GSE_VERSION_FILE
-                if version_file.exists():
-                    version_file.unlink()                   
-                messagebox.showinfo("Downgrade Complete", f"{target.upper()} files restored from backups")
-            except Exception as e:
-                messagebox.showerror("Downgrade Error", f"Failed: {str(e)}")
-
     def _update_user_ini(self):
         ini_path = EXTRA_FOLDER / "configs.user.ini"
     
@@ -3405,6 +3541,16 @@ class WatcherUI(tk.Tk):
         self.dark_mode = False
         self.steamless_releases_loaded = False
         self.steamless_window_id = None
+        self.download_managers = {
+            "steamless": DownloadManager("steamless", self),
+            "gbe": DownloadManager("gbe", self),
+            "gse": DownloadManager("gse", self),
+        }
+        self.dlm_releases_loaded = {
+            "steamless": False,
+            "gbe": False,
+            "gse": False,
+        }
 
         try:
             self.tk.eval('package require tkdnd')
@@ -3565,8 +3711,6 @@ class WatcherUI(tk.Tk):
         self.user_config = USER_SETTINGS
 
         self._init_game_config()
-        self._dragged_file = None
-        self._drag_start_pos = (0, 0)
 
         self.stub_removal_selected_files = []
         self.stub_removal_version_vars = {}
@@ -3995,13 +4139,12 @@ class WatcherUI(tk.Tk):
         theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
         self.stub_removal_selected_files = []
         self._stub_removal_html_path = self.current_html_path
-
         self.stub_removal_frame = Frame(self, bg=theme['bg'])
         self.stub_removal_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
         title = Label(
             self.stub_removal_frame,
-            text="Stub Removal - Select Executables",
+            text="Select Executables",
             font=("Helvetica", 14, "bold"),
             bg=theme['bg'],
             fg=theme['fg']
@@ -4046,7 +4189,7 @@ class WatcherUI(tk.Tk):
             fg=theme['fg'],
             padx=15,
             pady=8
-        ).pack(side="left", padx=(10, 5), expand=True, fill="x")
+        ).pack(side="left", padx=(0, 5), expand=True, fill="x")
 
         Button(
             btn_frame,
@@ -4056,7 +4199,7 @@ class WatcherUI(tk.Tk):
             fg=theme['fg'],
             padx=15,
             pady=8
-        ).pack(side="right", padx=(5, 10), expand=True, fill="x")
+        ).pack(side="right", padx=(5, 0), expand=True, fill="x")
 
     def _hide_stub_removal_panel(self):
         if hasattr(self, 'stub_removal_frame') and self.stub_removal_frame.winfo_exists():
@@ -4424,7 +4567,7 @@ class WatcherUI(tk.Tk):
         self.game_config_frame.config(bg=theme['bg'])
 
         title = Label(
-            self.game_config_frame, 
+            self.game_config_frame,
             text="Game Configuration",
             font=("Helvetica", 16, "bold"),
             bg=theme['bg'],
@@ -4434,7 +4577,7 @@ class WatcherUI(tk.Tk):
 
         self.selection_container = Frame(self.game_config_frame, bg=theme['bg'])
         self.selection_container.pack(pady=10)
-    
+
         self.platform_label = Label(
             self.selection_container,
             text="Detected Platform: None",
@@ -4446,14 +4589,14 @@ class WatcherUI(tk.Tk):
 
         self.emu_frame = Frame(self.selection_container, bg=theme['bg'])
         self.emu_label = Label(
-            self.emu_frame, 
+            self.emu_frame,
             text="Select Emulator:",
             bg=theme['bg'],
             fg=theme['fg'],
             font=("Helvetica", 11)
         )
         self.emu_label.pack(side="left", padx=(0, 10))
-    
+
         self.emu_var = tk.StringVar()
         self.emu_dropdown = ttk.Combobox(
             self.emu_frame,
@@ -4491,7 +4634,7 @@ class WatcherUI(tk.Tk):
         self.arch_dropdown.pack(side="left")
 
         drop_frame = Frame(self.game_config_frame, bg=theme['bg'])
-        drop_frame.pack(pady=10, fill="both", expand=True, padx=20)
+        drop_frame.pack(pady=10, fill="x", padx=20)
 
         self.game_drop_helper = DropZoneHelper(
             parent_widget=drop_frame,
@@ -4499,16 +4642,16 @@ class WatcherUI(tk.Tk):
             theme=theme,
             allowed_extensions=['.exe', '.x86', '.x86_64', '.sh', '.bin', ''],
             initial_text="Drop A Game Executable Here or Click to Browse",
-            height=10,
-            font_size=14
+            height=6,
+            font_size=12
         )
 
         self.drop_label = self.game_drop_helper.drop_label
         self.drop_label.focus_set()
 
         btn_frame = Frame(self.game_config_frame, bg=theme['bg'])
-        btn_frame.pack(pady=10)
-    
+        btn_frame.pack(fill="x", pady=10)
+
         Button(
             btn_frame,
             text="Process",
@@ -4516,7 +4659,7 @@ class WatcherUI(tk.Tk):
             bg=theme['button_bg'],
             fg=theme['fg'],
             padx=20
-        ).pack(side="left", padx=10)
+        ).pack(side="left", padx=(0, 5), expand=True, fill="x")
 
         Button(
             btn_frame,
@@ -4525,7 +4668,7 @@ class WatcherUI(tk.Tk):
             bg=theme['button_bg'],
             fg=theme['fg'],
             padx=20
-        ).pack(side="right", padx=10)
+        ).pack(side="right", padx=(5, 0), expand=True, fill="x")
 
     def _on_emulator_changed(self, event):
         if hasattr(self, 'game_drop_helper'):
@@ -5549,15 +5692,11 @@ def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Ev
         time.sleep(1)
 
 if __name__ == "__main__":
-    if GENERAL_SETTINGS.get("auto_update", True) or GENERAL_SETTINGS.get("auto_update_gbe", True) or GENERAL_SETTINGS.get("auto_update_gse", True):
+    if GENERAL_SETTINGS.get("auto_update", True):
         save_update_check_time()
 
     if GENERAL_SETTINGS.get("auto_update", True):
         threading.Thread(target=check_for_updates, daemon=True).start()
-    if GENERAL_SETTINGS.get("auto_update_gbe", True):
-        threading.Thread(target=check_for_updates, args=(False, 'gbe'), daemon=True).start()
-    if GENERAL_SETTINGS.get("auto_update_gse", True):
-        threading.Thread(target=check_for_updates, args=(False, 'gse'), daemon=True).start()
 
     if len(sys.argv) > 1 and Path(sys.argv[1]).suffix.lower() == ".html":
         main()
