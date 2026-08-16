@@ -25,6 +25,10 @@ def _terminal_progress(current: int, total: int) -> None:
     sys.stdout.write(f"\r[{bar}] {percent:3d}%")
     sys.stdout.flush()
 
+def show_custom_dialog(parent, dialog_type, title, message, buttons=None, callback=None):
+    dialog = CustomModalDialog(parent, title, message, dialog_type, buttons, callback)
+    return dialog.show()
+
 def _open_folder(path: Path) -> None:
     try:
         path = path.resolve()
@@ -394,7 +398,6 @@ def check_for_updates(manual=False, target='app'):
                     error_msg = f"Missing required assets for {cfg['success_msg']} update"
                     raise Exception(error_msg)
 
-                # Only app update logic - no GBE/GSE
                 for asset in assets:
                     dl_path = DOWNLOADS_FOLDER / asset["name"]
                     response = requests.get(asset["browser_download_url"], stream=True)
@@ -527,7 +530,7 @@ def download_appid_html(appid: str) -> Path | None:
     if not appid.isdigit():
         print(f"⚠️ Invalid AppID: {appid}")
         if global_ui:
-            global_ui.after(0, lambda: messagebox.showerror("Invalid AppID", f"{appid} is not a valid numeric AppID"))
+            show_custom_dialog(global_ui, "Invalid AppID", f"{appid} is not a valid numeric AppID")
         return None
 
     url = f"https://steamdb.info/app/{appid}/stats/"
@@ -612,7 +615,7 @@ def download_appid_via_steam_api(appid: str, api_key: str) -> Path | None:
         if str(appid) not in store_data or not store_data[str(appid)].get('success', False):
             print(f"❌ Game {appid} not found on Steam Store")
             if global_ui:
-                global_ui.after(0, lambda: messagebox.showerror("Game Not Found", f"AppID {appid} not found"))
+                show_custom_dialog(global_ui, "Game Not Found", f"AppID {appid} not found")
             return None
 
         game_name = store_data[str(appid)]['data']['name']
@@ -631,7 +634,7 @@ def download_appid_via_steam_api(appid: str, api_key: str) -> Path | None:
         if not data.get('game', {}).get('availableGameStats', {}).get('achievements'):
             print(f"⚠️ No achievements found for AppID {appid}")
             if global_ui:
-                global_ui.after(0, lambda: messagebox.showinfo("No Achievements", f"AppID {appid} has no achievements"))
+                show_custom_dialog(global_ui, "No Achievements", f"AppID {appid} has no achievements")
             return None
 
         HTML_FOLDER = pathlib.Path(__file__).resolve().parent / "HTML"
@@ -696,10 +699,7 @@ def download_appid_via_steam_api(appid: str, api_key: str) -> Path | None:
         error_msg = str(e)
         print(f"❌ Steam API error for AppID {appid}: {error_msg}")
         if global_ui:
-            global_ui.after(0, lambda em=error_msg: messagebox.showerror(
-                "Steam API Error",
-                f"Failed to fetch data:\n{em}\n\nCheck your API key in Settings."
-            ))
+            show_custom_dialog(global_ui, "Steam API Error", f"Failed to fetch data:\n{em}\n\nCheck your API key in Settings.")
         return None
 
 # ----------------------------------------------------------------------
@@ -1650,7 +1650,8 @@ class DropZoneHelper:
             height=height,
             relief="groove",
             font=("Helvetica", font_size),
-            cursor="hand2"
+            cursor="hand2",
+            takefocus=True
         )
         self.drop_label.pack(fill="both", expand=True, padx=20, pady=10)
 
@@ -1664,15 +1665,20 @@ class DropZoneHelper:
             self.drop_label.bind("<ButtonPress>", self._wayland_dnd_start)
             self.drop_label.bind("<ButtonRelease>", self._wayland_dnd_stop)
             self.drop_label.bind("<Motion>", self._wayland_dnd_motion)
-        elif self.tkdnd_available:
+        else:
             self.drop_label.bind("<Enter>", self._xdnd_enter)
             self.drop_label.bind("<Leave>", lambda e: self.drop_label.config(bg=self.theme['widget_bg']))
-            self.drop_label.bind("<XdndPosition>", self._xdnd_position)
-            self.drop_label.bind("<XdndDrop>", self._xdnd_drop)
-            self._register_xdnd()
-        else:
-            self.drop_label.bind("<Enter>", lambda e: self.drop_label.config(bg=self.theme['hover_bg']))
-            self.drop_label.bind("<Leave>", lambda e: self.drop_label.config(bg=self.theme['widget_bg']))
+            try:
+                self.drop_label.bind("<XdndPosition>", self._xdnd_position)
+                self.drop_label.bind("<XdndDrop>", self._xdnd_drop)
+                try:
+                    self._register_xdnd()
+                except Exception as e:
+                    print(f"[DropZoneHelper] XDND registration failed: {e}")
+            except Exception as e:
+                print(f"[DropZoneHelper] Could not bind X11 DND: {e}")
+                self.drop_label.bind("<Enter>", lambda e: self.drop_label.config(bg=self.theme['hover_bg']))
+                self.drop_label.bind("<Leave>", lambda e: self.drop_label.config(bg=self.theme['widget_bg']))
 
     def _is_wayland(self):
         return "wayland" in os.environ.get("XDG_SESSION_TYPE", "").lower()
@@ -1753,10 +1759,7 @@ class DropZoneHelper:
 
         if self.allowed_extensions:
             if not any(file_path.name.lower().endswith(ext) for ext in self.allowed_extensions):
-                messagebox.showwarning(
-                    "Invalid File",
-                    f"Only {', '.join(self.allowed_extensions)} files are supported"
-                )
+                show_custom_dialog(self, "warning", "Invalid File", f"Only {', '.join(self.allowed_extensions)} files are supported")
                 return
 
         if self.on_files_callback:
@@ -1859,6 +1862,163 @@ class DropZoneHelper:
     def update_text(self, new_text):
         if self.drop_label:
             self.drop_label.config(text=new_text)
+
+# ------------------------------------------------------------
+class VersionDropdownHelper:
+    def __init__(self, parent_frame, target, on_select_callback=None, theme=None, disabled_if_single=True):
+        self.parent_frame = parent_frame
+        self.target = target
+        self.on_select_callback = on_select_callback
+        self.theme = theme or (parent_frame.master.DARK_THEME if hasattr(parent_frame.master, 'dark_mode') and parent_frame.master.dark_mode else parent_frame.master.LIGHT_THEME)
+        self.disabled_if_single = disabled_if_single
+        self.dropdown = None
+        self.var = None
+        self._create_dropdown()
+
+    def _create_dropdown(self):
+        installed_versions = self._get_installed_versions()
+        if not installed_versions:
+            Label(
+                self.parent_frame,
+                text=f"No {self.target.upper()} versions installed",
+                bg=self.theme['bg'],
+                fg=self.theme['fg']
+            ).pack(side="left", padx=(0, 10))
+            return
+
+        self.var = tk.StringVar()
+        if len(installed_versions) == 1 and self.disabled_if_single:
+            self.var.set(installed_versions[0])
+            Label(
+                self.parent_frame,
+                text=f"{self.target.upper()} {installed_versions[0]}",
+                bg=self.theme['bg'],
+                fg=self.theme['fg']
+            ).pack(side="left", padx=(0, 10))
+        else:
+            self.dropdown = ttk.Combobox(
+                self.parent_frame,
+                textvariable=self.var,
+                values=sorted(installed_versions, reverse=True),
+                state="readonly",
+                width=15,
+                cursor="hand2"
+            )
+            self.dropdown.pack(side="left", padx=(0, 10))
+            self.var.set(installed_versions[0])
+            if self.on_select_callback:
+                self.dropdown.bind("<<ComboboxSelected>>", lambda e: self.on_select_callback(self.var.get()))
+
+    def _get_installed_versions(self):
+        versions = load_dlm_versions()
+        target_versions = versions.get(self.target, {})
+        return [v for v, installed in target_versions.items() if installed]
+
+    def get_selected_version(self):
+        return self.var.get() if self.var else None
+
+# ------------------------------------------------------------
+class CustomModalDialog:
+    def __init__(self, parent, title, message, dialog_type="info", buttons=None, callback=None):
+        self.parent = parent
+        self.title = title
+        self.message = message
+        self.dialog_type = dialog_type
+        self.callback = callback
+
+        if buttons is None:
+            if dialog_type == "yesno":
+                buttons = [{"text": "Yes", "value": True}, {"text": "No", "value": False}]
+            elif dialog_type == "ok":
+                buttons = [{"text": "OK", "value": True}]
+            elif dialog_type == "okcancel":
+                buttons = [{"text": "OK", "value": True}, {"text": "Cancel", "value": False}]
+            else:
+                buttons = [{"text": "OK", "value": True}]
+
+        self.buttons = buttons
+        self.result = None
+        self.dialog_frame = None
+        self.overlay = None
+
+    def show(self):
+        theme = self.parent.DARK_THEME if hasattr(self.parent, 'dark_mode') and self.parent.dark_mode else self.parent.LIGHT_THEME
+
+        overlay_color = "#202020"
+        self.overlay = Frame(self.parent, bg=overlay_color)
+        self.overlay.place(x=0, y=0, relwidth=1, relheight=1)
+        self.overlay.lift()
+
+        try:
+            self.overlay.attributes("-alpha", 0.7)
+        except:
+            pass
+
+        self.overlay.bind("<Button-1>", lambda e: None)
+
+        self.dialog_frame = Frame(self.parent, bg=theme['widget_bg'], padx=20, pady=20)
+        self.dialog_frame.place(in_=self.parent, anchor="center", relx=0.5, rely=0.5)
+        self.dialog_frame.lift()
+
+        title_label = Label(
+            self.dialog_frame,
+            text=self.title,
+            font=("Helvetica", 14, "bold"),
+            bg=theme['widget_bg'],
+            fg=theme['fg']
+        )
+        title_label.pack(fill="x", pady=(0, 10))
+
+        message_label = Label(
+            self.dialog_frame,
+            text=self.message,
+            font=("Helvetica", 11),
+            bg=theme['widget_bg'],
+            fg=theme['fg'],
+            wraplength=400,
+            justify="left"
+        )
+        message_label.pack(fill="x", pady=(0, 20))
+
+        button_frame = Frame(self.dialog_frame, bg=theme['widget_bg'])
+        button_frame.pack(fill="x")
+
+        for i, btn in enumerate(self.buttons):
+            button = Button(
+                button_frame,
+                text=btn["text"],
+                command=lambda v=btn["value"]: self._on_button_click(v),
+                bg=theme['button_bg'],
+                fg=theme['fg'],
+                padx=15,
+                pady=8,
+                bd=0,
+                relief='flat'
+            )
+            button.pack(side="left", padx=(0, 10) if i < len(self.buttons) - 1 else 0)
+
+        self.dialog_frame.grab_set()
+
+        self.parent.update_idletasks()
+        self.dialog_frame.update_idletasks()
+
+        self.parent.wait_window(self.dialog_frame)
+
+        if self.overlay:
+            self.overlay.destroy()
+        self.overlay = None
+        self.dialog_frame = None
+
+        return self.result
+
+    def _on_button_click(self, value):
+        self.result = value
+        if self.callback:
+            self.callback(value)
+
+        if self.dialog_frame:
+            self.dialog_frame.grab_release()
+            self.dialog_frame.destroy()
 
 # ------------------------------------------------------------
 class DownloadManager:
@@ -2153,7 +2313,10 @@ class DownloadManager:
                 shutil.rmtree(version_dir, ignore_errors=True)
             version_dir.mkdir(parents=True, exist_ok=True)
 
-            self._install_emu(DOWNLOADS_FOLDER, version)
+            if self.target == "steamless":
+                self._install_steamless(DOWNLOADS_FOLDER, self._get_version_dir(version))
+            else:
+                self._install_emu(DOWNLOADS_FOLDER, version)
 
             installed_files = list(version_dir.rglob("*"))
             if not installed_files:
@@ -2211,6 +2374,33 @@ class DownloadManager:
             shutil.move(str(found['config']), str(install_dir / "Steamless.CLI.exe.config"))
         for dll in found['plugins']:
             shutil.move(str(dll), str(install_dir / dll.name))
+
+        plugins_folder = extract_folder / "Plugins"
+        if plugins_folder.exists():
+            dest_plugins = install_dir / "Plugins"
+            if dest_plugins.exists():
+                shutil.rmtree(dest_plugins, ignore_errors=True)
+            shutil.copytree(plugins_folder, dest_plugins)
+            print(f"📁 Copied Plugins folder to {dest_plugins}")
+
+        tracking_file = APP_FOLDER / ".steamless_versions.json"
+        try:
+            tracking_data = {}
+            if tracking_file.exists():
+                with open(tracking_file, 'r', encoding='utf-8') as f:
+                    tracking_data = json.load(f)
+
+            version_name = install_dir.name
+            installed_files = [str(p.relative_to(install_dir)) for p in install_dir.rglob("*") if p.is_file()]
+            tracking_data[version_name] = installed_files
+
+            tracking_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(tracking_file, 'w', encoding='utf-8') as f:
+                json.dump(tracking_data, f, indent=2)
+            print(f"📝 Saved Steamless tracking file: {tracking_file}")
+        except Exception as e:
+            print(f"⚠️ Failed to save Steamless tracking file: {e}")
+
 #----------------------------------------------------------------------------------------------------
     def _install_emu(self, extract_folder: Path, version: str):
         is_gbe = self.target == "gbe"
@@ -2546,39 +2736,49 @@ class DownloadManager:
         if not _gui_yes_no(f"Are you sure you want to delete {self.config['name']} {version}?"):
             return
 
-        emu = "gbe" if self.target == "gbe" else "gse"
-        tracking_file = APP_FOLDER / emu / f".{emu}_{version}.json"
-
         try:
-            tracked_files = []
-            if tracking_file.exists():
-                with open(tracking_file, "r", encoding="utf-8") as f:
-                    tracked_files = json.load(f)
-            for file_path in tracked_files:
-                path = Path(file_path)
-                if path.exists():
-                    path.unlink()
-                    print(f"🗑️ Deleted file: {path}")
-
             version_dir = self._get_version_dir(version)
             if version_dir.exists():
                 shutil.rmtree(version_dir, ignore_errors=True)
+                print(f"🗑️ Deleted version directory: {version_dir}")
 
             linux_dl = DOWNLOADS_FOLDER / "linux" / version
             windows_dl = DOWNLOADS_FOLDER / "windows" / version
             for d in [linux_dl, windows_dl]:
                 if d.exists():
                     shutil.rmtree(d, ignore_errors=True)
+                    print(f"🗑️ Deleted download folder: {d}")
 
-            tools_dir = self.config["tools_dir"] / version
-            if tools_dir.exists():
-                shutil.rmtree(tools_dir, ignore_errors=True)
+            if "tools_dir" in self.config:
+                tools_dir = self.config["tools_dir"] / version
+                if tools_dir.exists():
+                    shutil.rmtree(tools_dir, ignore_errors=True)
+                    print(f"🗑️ Deleted tools folder: {tools_dir}")
 
-            if tracking_file.exists():
-                tracking_file.unlink()
-                print(f"🗑️ Deleted file: {tracking_file}")
+            if self.target == "steamless":
+                tracking_file = APP_FOLDER / ".steamless_versions.json"
+                if tracking_file.exists():
+                    try:
+                        with open(tracking_file, 'r', encoding='utf-8') as f:
+                            tracking_data = json.load(f)
+                        if version in tracking_data:
+                            del tracking_data[version]
+                            with open(tracking_file, 'w', encoding='utf-8') as f:
+                                json.dump(tracking_data, f, indent=2)
+                            print(f"🗑️ Removed {version} from Steamless tracking")
+                    except Exception as e:
+                        print(f"⚠️ Error updating Steamless tracking: {e}")
 
-            mark_version_installed(self.target, version, False)
+                mark_version_installed(self.target, version, False)
+
+            elif self.target in ["gbe", "gse"]:
+                emu = self.target
+                tracking_file = APP_FOLDER / emu / f".{emu}_{version}.json"
+                if tracking_file.exists():
+                    tracking_file.unlink()
+                    print(f"🗑️ Deleted tracking file: {tracking_file}")
+                mark_version_installed(self.target, version, False)
+
             if version in self.download_status:
                 entry = self.download_status[version]
                 entry['status'] = 'pending'
@@ -3421,7 +3621,7 @@ class WatcherUI(tk.Tk):
                 versions.sort(reverse=True, key=lambda x: x[0])
             
                 if not versions:
-                    messagebox.showinfo("Downgrade", "No valid versions found")
+                    show_custom_dialog(self, "info", "Downgrade", "No valid versions found")
                     return
 
                 current_tuple = tuple(map(int, current_version.lstrip('v').split('.')))
@@ -3430,7 +3630,7 @@ class WatcherUI(tk.Tk):
                 current_index = next((i for i, (v, _) in enumerate(versions) if v == current_tuple), -1)
 
                 if current_index == -1:
-                    messagebox.showinfo("Downgrade", f"Current version {current_version} not found in releases")
+                    show_custom_dialog(self, "info", "Downgrade", f"Current version {current_version} not found in releases")
                     return
 
                 if current_tuple < latest_tuple:
@@ -3438,12 +3638,12 @@ class WatcherUI(tk.Tk):
                         target_release = versions[0][1]
                     else:
                         if current_index + 1 >= len(versions):
-                            messagebox.showinfo("Downgrade", "No older versions available")
+                            show_custom_dialog(self, "info", "Downgrade", "No older versions available")
                             return
                         target_release = versions[current_index + 1][1]
                 else:
                     if current_index + 1 >= len(versions):
-                        messagebox.showinfo("Downgrade", "No older versions available")
+                        show_custom_dialog(self, "info", "Downgrade", "No older versions available")
                         return
                     target_release = versions[current_index + 1][1]
 
@@ -3486,7 +3686,7 @@ class WatcherUI(tk.Tk):
                     restart_application()
 
             except Exception as e:
-                messagebox.showerror("Downgrade Failed", str(e))
+                show_custom_dialog(self, "error", "Downgrade Failed", str(e))
 
     def _update_user_ini(self):
         ini_path = EXTRA_FOLDER / "configs.user.ini"
@@ -3539,6 +3739,7 @@ class WatcherUI(tk.Tk):
     def __init__(self, file_queue: queue.Queue):
         super().__init__()
         self.dark_mode = False
+        self.selected_version = None
         self.steamless_releases_loaded = False
         self.steamless_window_id = None
         self.download_managers = {
@@ -3576,7 +3777,7 @@ class WatcherUI(tk.Tk):
         )
 
         self.title("SSG: Watching for HTML files")
-        self.geometry("800x800")
+        self.geometry("800x850")
         self.resizable(False, False)
 
         self.top_bar = Frame(self)
@@ -3713,7 +3914,6 @@ class WatcherUI(tk.Tk):
         self._init_game_config()
 
         self.stub_removal_selected_files = []
-        self.stub_removal_version_vars = {}
         self.stub_removal_options = {}
         self.tooltip_label = None
 
@@ -4135,7 +4335,11 @@ class WatcherUI(tk.Tk):
         self._hide_attention_panel()
 
     def _show_stub_removal_panel(self):
+        if hasattr(self, 'stub_removal_frame') and self.stub_removal_frame.winfo_exists():
+            self.stub_removal_frame.destroy()
+
         self._hide_attention_panel()
+        self._hide_stub_removal_options()
         theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
         self.stub_removal_selected_files = []
         self._stub_removal_html_path = self.current_html_path
@@ -4160,11 +4364,23 @@ class WatcherUI(tk.Tk):
         )
         info_label.pack(pady=(0, 10))
 
-        self.stub_removal_files_frame = Frame(self.stub_removal_frame, bg=theme['bg'])
-        self.stub_removal_files_frame.pack(fill="x", pady=5)
+        files_container = Frame(self.stub_removal_frame, bg=theme['bg'])
+        files_container.pack(fill="both", expand=True, pady=(0, 10))
+        files_canvas = Canvas(files_container, bg=theme['bg'], borderwidth=0, highlightthickness=0, height=100)
+        files_scrollbar = Scrollbar(files_container, orient="vertical", command=files_canvas.yview)
+        files_canvas.configure(yscrollcommand=files_scrollbar.set)
+        files_scrollbar.pack(side="right", fill="y")
+        files_canvas.pack(side="left", fill="both", expand=True)
+        self.stub_removal_files_frame = Frame(files_canvas, bg=theme['bg'])
+        files_canvas.create_window((0, 0), window=self.stub_removal_files_frame, anchor="nw")
+
+        self.cols_per_row = 4
+        def update_files_scrollregion(event=None):
+            files_canvas.configure(scrollregion=files_canvas.bbox("all"))
+        self.stub_removal_files_frame.bind("<Configure>", update_files_scrollregion)
 
         drop_frame = Frame(self.stub_removal_frame, bg=theme['bg'])
-        drop_frame.pack(fill="both", expand=True, pady=10)
+        drop_frame.pack(fill="x", pady=20)
 
         self.stub_drop_helper = DropZoneHelper(
             parent_widget=drop_frame,
@@ -4175,8 +4391,8 @@ class WatcherUI(tk.Tk):
             height=8,
             font_size=12
         )
-
         self.stub_removal_drop_label = self.stub_drop_helper.drop_label
+        self.stub_removal_drop_label.focus_set()
 
         btn_frame = Frame(self.stub_removal_frame, bg=theme['bg'])
         btn_frame.pack(fill="x", pady=10)
@@ -4189,7 +4405,7 @@ class WatcherUI(tk.Tk):
             fg=theme['fg'],
             padx=15,
             pady=8
-        ).pack(side="left", padx=(0, 5), expand=True, fill="x")
+        ).pack(side="left", padx=(0, 5), fill="x", expand=True)
 
         Button(
             btn_frame,
@@ -4199,13 +4415,12 @@ class WatcherUI(tk.Tk):
             fg=theme['fg'],
             padx=15,
             pady=8
-        ).pack(side="right", padx=(5, 0), expand=True, fill="x")
+        ).pack(side="right", padx=(5, 0), fill="x", expand=True)
 
     def _hide_stub_removal_panel(self):
         if hasattr(self, 'stub_removal_frame') and self.stub_removal_frame.winfo_exists():
             self.stub_removal_frame.destroy()
         self.stub_removal_selected_files = []
-        self.stub_removal_version_vars = {}
         self.stub_removal_options = {}
         if hasattr(self, 'tooltip_label') and self.tooltip_label:
             self.tooltip_label.destroy()
@@ -4217,7 +4432,7 @@ class WatcherUI(tk.Tk):
     def _handle_stub_removal_file(self, path):
         file_path = Path(path)
         if not file_path.suffix.lower() == '.exe':
-            messagebox.showwarning("Invalid File", "Only Windows .exe files are supported for stub removal")
+            show_custom_dialog(self, "warning", "Invalid File", "Only Windows .exe files are supported for stub removal")
             return
         self._add_stub_removal_file(file_path)
 
@@ -4225,15 +4440,21 @@ class WatcherUI(tk.Tk):
         theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
         if file_path in self.stub_removal_selected_files:
             return
+
         self.stub_removal_selected_files.append(file_path)
+        index = len(self.stub_removal_selected_files) - 1
+        row = index // self.cols_per_row
+        col = index % self.cols_per_row
+
         file_frame = Frame(self.stub_removal_files_frame, bg=theme['bg'])
-        file_frame.pack(fill="x", pady=2)
+        file_frame.grid(row=row, column=col, padx=5, pady=5, sticky="w")
+
         file_label = Label(
             file_frame,
             text=f"{len(self.stub_removal_selected_files)}. {file_path.name}",
             bg=theme['bg'],
             fg=theme['fg'],
-            font=("Helvetica", 10)
+            font=("Helvetica", 11)
         )
         file_label.pack(side="left", padx=5)
         remove_btn = Button(
@@ -4253,18 +4474,28 @@ class WatcherUI(tk.Tk):
         if file_path in self.stub_removal_selected_files:
             self.stub_removal_selected_files.remove(file_path)
         file_frame.destroy()
-        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
-        for i, fp in enumerate(self.stub_removal_selected_files, 1):
+
+        for i, fp in enumerate(self.stub_removal_selected_files):
+            row = i // self.cols_per_row
+            col = i % self.cols_per_row
             for child in self.stub_removal_files_frame.winfo_children():
-                if isinstance(child, Frame):
+                if isinstance(child, Frame) and child.grid_info()["row"] == row and child.grid_info()["column"] == col:
                     for label in child.winfo_children():
-                        if isinstance(label, Label) and label.cget("text").startswith(f"{i-1}."):
-                            label.config(text=f"{i}. {fp.name}")
+                        if isinstance(label, Label):
+                            label.config(text=f"{i + 1}. {fp.name}")
+
+        if hasattr(self, 'stub_removal_files_frame'):
+            self.stub_removal_files_frame.update_idletasks()
+            files_canvas = self.stub_removal_files_frame.master
+            files_canvas.configure(scrollregion=files_canvas.bbox("all"))
 
     def _show_stub_removal_options(self):
-        if not self.stub_removal_selected_files:
-            messagebox.showwarning("No Files", "Please add at least one executable file")
+        if not self.winfo_exists() or self._stop_requested:
             return
+        if not self.stub_removal_selected_files:
+            show_custom_dialog(self, "warning", "No Files", "Please add at least one executable file")
+            return
+
         theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
         if hasattr(self, 'stub_removal_frame') and self.stub_removal_frame.winfo_exists():
             self.stub_removal_frame.pack_forget()
@@ -4293,11 +4524,10 @@ class WatcherUI(tk.Tk):
         steamless_dir = APP_FOLDER / "steamless"
         version_folders = [f for f in steamless_dir.iterdir() if f.is_dir()] if steamless_dir.exists() else []
         if not version_folders:
-            messagebox.showerror("Error", "No Steamless versions found. Please download at least one version in Settings > Steamless Config")
+            show_custom_dialog(self, "error", "Error", "No Steamless versions found. Please download at least one version in Settings > Steamless Config")
             self._hide_stub_removal_options()
             return
         version_folders.sort(key=lambda x: x.name, reverse=True)
-        self.stub_removal_version_vars = {}
 
         version_frame = Frame(self.stub_removal_options_frame, bg=theme['bg'])
         version_frame.pack(fill="x", pady=5)
@@ -4310,23 +4540,14 @@ class WatcherUI(tk.Tk):
         )
         version_label.pack(side="left", padx=(0, 10))
 
-        for vf in version_folders:
-            var = tk.BooleanVar(value=(vf.name == version_folders[0].name))
-            self.stub_removal_version_vars[vf.name] = var
-            def on_version_select(v=vf.name):
-                for vn, vv in self.stub_removal_version_vars.items():
-                    vv.set(vn == v)
-                self.stub_removal_selected_version = v
-            Checkbutton(
-                version_frame,
-                text=vf.name,
-                variable=var,
-                bg=theme['bg'],
-                fg=theme['fg'],
-                selectcolor=theme['widget_bg'],
-                command=on_version_select
-            ).pack(side="left", padx=10)
-        self.stub_removal_selected_version = version_folders[0].name
+        self.stub_removal_version_helper = VersionDropdownHelper(
+            version_frame,
+            target="steamless",
+            on_select_callback=lambda v: setattr(self, 'stub_removal_selected_version', v),
+            theme=theme,
+            disabled_if_single=False
+        )
+        self.stub_removal_selected_version = version_folders[0].name if version_folders else None
 
         options_label = Label(
             self.stub_removal_options_frame,
@@ -4380,6 +4601,7 @@ class WatcherUI(tk.Tk):
             tooltip_btn.pack(side="left", padx=5)
             tooltip_btn.bind("<Enter>", lambda e, k=key: self._show_tooltip(e, tooltip_descriptions[k]))
             tooltip_btn.bind("<Leave>", self._hide_tooltip)
+            tooltip_btn.bind("<Button-1>", lambda e, k=key: self._show_tooltip(e, tooltip_descriptions[k]))
 
         btn_frame = Frame(self.stub_removal_options_frame, bg=theme['bg'])
         btn_frame.pack(fill="x", pady=10)
@@ -4391,7 +4613,7 @@ class WatcherUI(tk.Tk):
             fg=theme['fg'],
             padx=15,
             pady=8
-        ).pack(side="right", padx=10)
+        ).pack(side="left", padx=(5, 0), fill="x", expand=True)
         Button(
             btn_frame,
             text="Back",
@@ -4400,7 +4622,7 @@ class WatcherUI(tk.Tk):
             fg=theme['fg'],
             padx=15,
             pady=8
-        ).pack(side="left", padx=10)
+        ).pack(side="right", padx=(5, 0), fill="x", expand=True)
 
     def _hide_stub_removal_options(self):
         if hasattr(self, 'stub_removal_options_frame') and self.stub_removal_options_frame.winfo_exists():
@@ -4426,35 +4648,218 @@ class WatcherUI(tk.Tk):
         theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
         if hasattr(self, 'tooltip_label') and self.tooltip_label:
             self.tooltip_label.destroy()
-        self.tooltip_label = Label(
-            self,
+            self.tooltip_label = None
+
+        self.tooltip_label = tk.Toplevel(self)
+        self.tooltip_label.overrideredirect(True)
+        self.tooltip_label.wm_geometry(f"+{event.x_root + 20}+{event.y_root + 20}")
+
+        tooltip_frame = Frame(self.tooltip_label, bg=theme['widget_bg'], borderwidth=1, relief="solid")
+        tooltip_frame.pack()
+
+        tooltip_text = Label(
+            tooltip_frame,
             text=text,
             bg=theme['widget_bg'],
             fg=theme['fg'],
-            borderwidth=1,
-            relief="solid",
+            justify="left",
             wraplength=400,
-            justify="left"
+            font=("Helvetica", 10)
         )
-        self.tooltip_label.place(x=event.x_root + 10, y=event.y_root + 10)
+        tooltip_text.pack(padx=5, pady=5)
+
+        self.tooltip_label.lift()
+        self.tooltip_label.attributes("-topmost", True)
 
     def _hide_tooltip(self, event=None):
         if hasattr(self, 'tooltip_label') and self.tooltip_label:
-            self.tooltip_label.destroy()
+            try:
+                self.tooltip_label.destroy()
+            except tk.TclError:
+                pass
             self.tooltip_label = None
+
+    def _show_execution_output(self, output_text: str = "", log_paths: dict = None):
+        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        log_paths = log_paths or {}
+
+        if hasattr(self, 'output_frame') and self.output_frame.winfo_exists():
+            self.output_frame.destroy()
+
+        self.output_frame = Frame(self, bg=theme['bg'])
+        self.output_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        title = Label(
+            self.output_frame,
+            text="Steamless Stub Removal Output",
+            font=("Helvetica", 14, "bold"),
+            bg=theme['bg'],
+            fg=theme['fg']
+        )
+        title.pack(pady=10)
+
+        text_frame = Frame(self.output_frame, bg=theme['bg'])
+        text_frame.pack(fill="both", expand=True, pady=(0, 10))
+
+        scrollbar = Scrollbar(text_frame)
+        scrollbar.pack(side="right", fill="y")
+
+        self.output_text = tk.Text(
+            text_frame,
+            wrap="word",
+            bg=theme['widget_bg'],
+            fg=theme['fg'],
+            insertbackground=theme['fg'],
+            yscrollcommand=scrollbar.set,
+            font=("Courier", 10),
+            state="normal"
+        )
+        self.output_text.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.output_text.yview)
+
+        if output_text:
+            self.output_text.insert("end", output_text)
+            self.output_text.see("end")
+
+        btn_frame = Frame(self.output_frame, bg=theme['bg'])
+        btn_frame.pack(fill="x", pady=5)
+
+        Button(
+            btn_frame,
+            text="❌ Close",
+            command=self._hide_execution_output,
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            padx=10,
+            pady=5
+        ).pack(side="right", padx=(5, 0))
+
+        if not output_text:
+            self.output_text.config(state="disabled")
+
+    def _hide_execution_output(self):
+        if hasattr(self, 'output_frame') and self.output_frame.winfo_exists():
+            self.output_frame.destroy()
+        if hasattr(self, 'output_text'):
+            self.output_text = None
+
+    def _copy_output_to_clipboard(self):
+        if hasattr(self, 'output_text') and self.output_text:
+            output = self.output_text.get("1.0", "end-1c")
+            try:
+                self.clipboard_clear()
+                self.clipboard_append(output)
+                show_custom_dialog(self, "info", "Copied", "Logs copied to clipboard!")
+            except Exception as e:
+                show_custom_dialog(self, "error", "Error", f"Failed to copy logs: {e}")
+
+    def _save_live_output(self):
+        if hasattr(self, 'output_text') and self.output_text:
+            output = self.output_text.get("1.0", "end-1c")
+            log_path = Path.home() / f"steamless_output_{time.strftime('%Y%m%d_%H%M%S')}.log"
+
+            try:
+                log_path.write_text(output, encoding='utf-8')
+                show_custom_dialog(self, "info", "Saved", f"Logs saved to:\n{log_path}")
+            except Exception as e:
+                show_custom_dialog(self, "error", "Error", f"Failed to save logs: {e}")
 
     def _execute_stub_removal(self):
         if not self.stub_removal_selected_files:
-            messagebox.showwarning("No Files", "No executables selected for stub removal")
+            show_custom_dialog(self, "warning","No Files", "No executables selected for stub removal")
             return
-        version = self.stub_removal_selected_version
-        steamless_dir = APP_FOLDER / "steamless" / version
+
+        version = getattr(self, 'stub_removal_selected_version', self.stub_removal_version_helper.get_selected_version())
+        steamless_dir = APP_FOLDER / "steamless" / version if version else APP_FOLDER / "steamless"
         steamless_cli = steamless_dir / "Steamless.CLI.exe"
+
         if not steamless_cli.exists():
-            messagebox.showerror("Error", f"Steamless.CLI.exe not found in {steamless_dir}")
+            show_custom_dialog(self, "error", "Error", f"Steamless.CLI.exe not found in {steamless_dir}")
             return
+
+        self._hide_stub_removal_options()
+
+        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        if hasattr(self, 'output_frame') and self.output_frame.winfo_exists():
+            self.output_frame.destroy()
+
+        self.output_frame = Frame(self, bg=theme['bg'])
+        self.output_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        title = Label(
+            self.output_frame,
+            text="Steamless Stub Removal Output (Live)",
+            font=("Helvetica", 14, "bold"),
+            bg=theme['bg'],
+            fg=theme['fg']
+        )
+        title.pack(pady=10)
+
+        text_frame = Frame(self.output_frame, bg=theme['bg'])
+        text_frame.pack(fill="both", expand=True, pady=(0, 10))
+
+        scrollbar = Scrollbar(text_frame)
+        scrollbar.pack(side="right", fill="y")
+
+        self.output_text = tk.Text(
+            text_frame,
+            wrap="word",
+            bg=theme['widget_bg'],
+            fg=theme['fg'],
+            insertbackground=theme['fg'],
+            yscrollcommand=scrollbar.set,
+            font=("Courier", 10),
+            state="normal"
+        )
+        self.output_text.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.output_text.yview)
+
+        btn_frame = Frame(self.output_frame, bg=theme['bg'])
+        btn_frame.pack(fill="x", pady=5)
+
+        Button(
+            btn_frame,
+            text="📋 Copy Logs",
+            command=lambda: self._copy_output_to_clipboard(),
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            padx=10,
+            pady=5
+        ).pack(side="left", padx=(0, 5))
+
+        Button(
+            btn_frame,
+            text="💾 Save Log",
+            command=lambda: self._save_live_output(),
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            padx=10,
+            pady=5
+        ).pack(side="left", padx=(0, 5))
+
+        Button(
+            btn_frame,
+            text="❌ Close",
+            command=self._hide_execution_output,
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            padx=10,
+            pady=5
+        ).pack(side="right", padx=(5, 0))
+
+        log_paths = {}
+        all_output = ""
+
         for exe_path in self.stub_removal_selected_files:
-            cmd = [str(steamless_cli), str(exe_path)]
+            if sys.platform.startswith("win"):
+                cmd = ["Steamless.CLI.exe"]
+            else:
+                if shutil.which("wine"):
+                    cmd = ["wine", "Steamless.CLI.exe"]
+                else:
+                    show_custom_dialog(self, "error", "Error", "Wine is required to run Steamless.CLI.exe on this platform")
+                    return
+
             if self.stub_removal_options['keep_bind'].get():
                 cmd.append("-k")
             if self.stub_removal_options['dump_payload'].get():
@@ -4469,42 +4874,103 @@ class WatcherUI(tk.Tk):
                 cmd.append("-z")
             if self.stub_removal_options['recalculate_checksum'].get():
                 cmd.append("-c")
-            print(f"Executing: {' '.join(cmd)}")
+
+            cmd.append("-v")
+            cmd.append(str(exe_path))
+
+            log_path = exe_path.with_suffix('.exe_log.txt')
+
+            self.output_text.insert("end", f"\n{'='*60}\nProcessing: {exe_path.name}\n{'='*60}\n\n")
+            self.output_text.see("end")
+            self.update_idletasks()
+
             try:
-                startupinfo = None
                 if sys.platform.startswith("win"):
                     startupinfo = subprocess.STARTUPINFO()
                     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                     startupinfo.wShowWindow = subprocess.SW_HIDE
-                result = subprocess.run(
-                    cmd,
-                    startupinfo=startupinfo,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
-                )
-                if result.returncode == 0:
-                    print(f"✅ Stub removal completed for {exe_path.name}")
+                    process = subprocess.Popen(
+                        cmd,
+                        cwd=steamless_dir,
+                        startupinfo=startupinfo,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1,
+                        universal_newlines=True
+                    )
                 else:
-                    error_msg = result.stderr or result.stdout or "Unknown error"
-                    print(f"❌ Stub removal failed for {exe_path.name}: {error_msg}")
-                    messagebox.showerror("Error", f"Stub removal failed for {exe_path.name}:\n{error_msg}")
+                    process = subprocess.Popen(
+                        cmd,
+                        cwd=steamless_dir,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1,
+                        universal_newlines=True
+                    )
+
+                for line in process.stdout:
+                    if line.strip():
+                        self.output_text.insert("end", line)
+                        self.output_text.see("end")
+                        self.update_idletasks()
+
+                return_code = process.wait()
+
+                if return_code == 0:
+                    self.output_text.insert("end", f"\n✅ Completed successfully for {exe_path.name}\n")
+                else:
+                    self.output_text.insert("end", f"\n⚠️  Failed for {exe_path.name} (Return code: {return_code})\n")
+
+                self.output_text.see("end")
+                self.update_idletasks()
+
             except Exception as e:
-                print(f"❌ Failed to execute stub removal for {exe_path.name}: {str(e)}")
-                messagebox.showerror("Error", f"Failed to execute stub removal for {exe_path.name}:\n{str(e)}")
-        self._hide_stub_removal_options()
+                self.output_text.insert("end", f"\n❌ Failed to execute for {exe_path.name}: {str(e)}\n")
+                self.output_text.see("end")
+                self.update_idletasks()
+                print(f"❌ Error processing {exe_path.name}: {e}")
+
+        self.output_text.config(state="disabled")
 
     def _on_close(self):
         self._stop_requested = True
 
-        if hasattr(self, 'attention_frame') and self.attention_frame.winfo_exists():
-            self.attention_frame.pack_forget()
+        if hasattr(self, '_active_dialog') and self._active_dialog:
+            try:
+                self._active_dialog.dialog_frame.destroy()
+            except:
+                pass
+            self._active_dialog = None
 
-        if hasattr(self, 'steamless_download_status'):
-            for version, entry in self.steamless_download_status.items():
-                if entry['status'] in ['downloading', 'extracting']:
+        for attr in ['output_frame', 'attention_frame', 'stub_removal_frame', 'stub_removal_options_frame', 'game_config_frame', 'settings_frame', 'tooltip_label']:
+            if hasattr(self, attr):
+                widget = getattr(self, attr)
+                if widget and hasattr(widget, 'winfo_exists'):
+                    if widget.winfo_exists():
+                        widget.destroy()
+                elif widget and hasattr(widget, 'destroy'):
+                    try:
+                        widget.destroy()
+                    except:
+                        pass
+                setattr(self, attr, None)
+
+        for manager in self.download_managers.values():
+            for version, entry in list(manager.download_status.items()):
+                if entry.get('status') in ['downloading', 'extracting']:
                     entry['status'] = 'cancelled'
-                    self._delete_steamless_version_files(version)
+                if 'status_frame' in entry and entry['status_frame']:
+                    try:
+                        if entry['status_frame'].winfo_exists():
+                            entry['status_frame'].destroy()
+                    except:
+                        pass
+                    entry['status_frame'] = None
+
+        self.stub_removal_selected_files = []
+        self.stub_removal_options = {}
 
         self.destroy()
 
@@ -4610,6 +5076,25 @@ class WatcherUI(tk.Tk):
         self.emu_var.set("GBE")
         self.emu_frame.pack()
 
+        self.version_frame = Frame(self.selection_container, bg=theme['bg'])
+        self.version_frame.pack(pady=5)
+
+        self.version_label = Label(
+            self.version_frame,
+            text="Version:",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 11)
+        )
+        self.version_label.pack(side="left", padx=(0, 10))
+
+        self.version_dropdown_helper = VersionDropdownHelper(
+            self.version_frame,
+            target="gbe",
+            on_select_callback=lambda v: setattr(self, 'selected_version', v),
+            theme=theme
+        )
+
         self.emu_dropdown.bind("<<ComboboxSelected>>", self._on_emulator_changed)
 
         self.arch_frame = Frame(self.selection_container, bg=theme['bg'])
@@ -4642,7 +5127,7 @@ class WatcherUI(tk.Tk):
             theme=theme,
             allowed_extensions=['.exe', '.x86', '.x86_64', '.sh', '.bin', ''],
             initial_text="Drop A Game Executable Here or Click to Browse",
-            height=6,
+            height=13,
             font_size=12
         )
 
@@ -4659,7 +5144,7 @@ class WatcherUI(tk.Tk):
             bg=theme['button_bg'],
             fg=theme['fg'],
             padx=20
-        ).pack(side="left", padx=(0, 5), expand=True, fill="x")
+        ).pack(side="left", padx=(5, 0), fill="x", expand=True)
 
         Button(
             btn_frame,
@@ -4668,11 +5153,25 @@ class WatcherUI(tk.Tk):
             bg=theme['button_bg'],
             fg=theme['fg'],
             padx=20
-        ).pack(side="right", padx=(5, 0), expand=True, fill="x")
+        ).pack(side="right", padx=(5, 0), fill="x", expand=True)
 
     def _on_emulator_changed(self, event):
-        if hasattr(self, 'game_drop_helper'):
-            self.game_drop_helper.drop_label.focus_set()
+        selected_emu = self.emu_var.get().lower()
+        self.version_dropdown_helper.target = selected_emu
+
+        for widget in self.version_frame.winfo_children():
+            if widget != self.version_label:
+                widget.destroy()
+
+        self.version_dropdown_helper = VersionDropdownHelper(
+            self.version_frame,
+            target=selected_emu,
+            on_select_callback=lambda v: setattr(self, 'selected_version', v),
+            theme=self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        )
+
+        if hasattr(self, 'selected_file') and self.selected_file is not None:
+            self._handle_file(self.selected_file)
 
     def _is_wayland(self):
         return "wayland" in os.environ.get("XDG_SESSION_TYPE", "").lower()
@@ -4766,7 +5265,7 @@ class WatcherUI(tk.Tk):
             
         except Exception as e:
             print(f"Error updating .gpfile: {e}")
-            messagebox.showerror("GPFile Error", f"Could not create configuration:\n {str(e)}")
+            show_custom_dialog(self, "error", "GPFile Error", f"Could not create configuration:\n {str(e)}")
 
     def _on_architecture_selected(self, *args):
         if self.arch_var.get():
@@ -4795,7 +5294,7 @@ class WatcherUI(tk.Tk):
                 self.processing_step = 2
             
             except Exception as e:
-                messagebox.showerror("Error", f"Failed to save architecture: {str(e)}")
+                show_custom_dialog(self, "error", "Error", f"Failed to save architecture: {str(e)}")
 
     def _generate_interface_file(self, game_dir: Path, gp_data: dict):
         try:
@@ -4846,10 +5345,10 @@ class WatcherUI(tk.Tk):
     
         except subprocess.CalledProcessError as e:
             print(f"Interface generation failed: {e}")
-            messagebox.showerror("Error", f"Failed to generate interface file: {e}")
+            show_custom_dialog(self, "error", "Error", f"Failed to generate interface file: {e}")
         except Exception as e:
             print(f"Unexpected error during interface generation: {e}")
-            messagebox.showerror("Error", f"Unexpected error: {e}")
+            show_custom_dialog(self, "error", "Error", f"Unexpected error: {e}")
     
         return False
 
@@ -4897,7 +5396,7 @@ class WatcherUI(tk.Tk):
         if self.processing_step == 1:
             if not self.selected_file:
                 if self.winfo_exists():
-                    messagebox.showwarning("Error", "Please select a game executable first")
+                    show_custom_dialog(self, "warning", "Error", "Please select a game executable first")
                 return
 
             try:
@@ -4934,7 +5433,7 @@ class WatcherUI(tk.Tk):
 
             except Exception as e:
                 if self.winfo_exists():
-                    self.after(0, lambda: messagebox.showerror("Error", f"Initial setup failed: {str(e)}"))
+                    show_custom_dialog(self, "error", "Error", f"Initial setup failed: {str(e)}")
 
         elif self.processing_step == 2:
             try:
@@ -5007,7 +5506,8 @@ class WatcherUI(tk.Tk):
 
                 arch_dir = "x32" if arch_value in ["x86", "32"] else "x64"
                 emulator = self.selected_emulator.lower()
-                base_dir = APP_FOLDER / emulator
+                version = getattr(self, 'selected_version', self.version_dropdown_helper.get_selected_version())
+                base_dir = APP_FOLDER / emulator / version if version else APP_FOLDER / emulator
 
                 success = self._generate_interface_file(game_dir, gp_data)
                 if not success:
@@ -5026,6 +5526,8 @@ class WatcherUI(tk.Tk):
                     steam_api_opp   = "steam_api64.dll" if opposite_arch == "x86_64" else "steam_api.dll"
                     steamclient_opp = "steamclient64.dll" if opposite_arch == "x86_64" else "steamclient.dll"
 
+                    version = getattr(self, 'selected_version', self.version_dropdown_helper.get_selected_version())
+                    base_dir = APP_FOLDER / emulator / version if version else APP_FOLDER / emulator
                     src_dir_sel = base_dir / "Windows" / selected_dir
                     for dll_name in (steam_api_sel, steamclient_sel):
                         src = src_dir_sel / dll_name
@@ -5254,7 +5756,7 @@ class WatcherUI(tk.Tk):
 
                 if platform in ["Windows", "Linux"]:
                     if self.winfo_exists():
-                        self.after(0, lambda: messagebox.showinfo("Success", f"{emulator.upper()} files installed"))
+                        show_custom_dialog(self, "info", "Success", f"{emulator.upper()} files installed")
 
                 self.game_config_frame.pack_forget()
                 self.processing_step = 0
@@ -5264,7 +5766,7 @@ class WatcherUI(tk.Tk):
 
             except Exception as e:
                 if self.winfo_exists():
-                    self.after(0, lambda: messagebox.showerror("Error", f"Installation failed: {str(e)}"))
+                    show_custom_dialog(self, "error", "Error", f"Installation failed: {str(e)}")
 
     def _update_gpfile(self, game_dir: Path, exe_path: Path):
         gpfile = game_dir / ".gpfile"
