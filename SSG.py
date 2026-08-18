@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 import os, sys, re, json, argparse, difflib, pathlib, requests, shutil, subprocess, threading, queue, time, webbrowser, zipfile, bcrypt, base64, ctypes
 from collections import defaultdict
-from tkinter import Canvas, Scrollbar, Frame, Label, ttk, Checkbutton, Entry, filedialog
+from tkinter import Canvas, Scrollbar, Frame, Label, ttk, Checkbutton, Button, Entry, filedialog, messagebox
 from pathlib import Path
 from collections import OrderedDict
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from cryptography.fernet import Fernet
 from typing import Dict, Any, Optional
+import tkinter as tk
 
 all_html_files: list[Path] = []
 file_status: dict[Path, str] = {}
@@ -16,14 +17,6 @@ _prompt_handled_lock = threading.Lock()
 game_content_lock = defaultdict(threading.Lock)
 dlc_lock = threading.Lock()
 _download_done: dict[Path, bool] = {}
-
-def _terminal_progress(current: int, total: int) -> None:
-    percent = int(current / total * 100)
-    filled = int(current / total * 30)
-    bar = "·" + "·" * (30 - 1)
-    bar = bar[:filled] + "●" + bar[filled + 1 :] if filled < 30 else bar
-    sys.stdout.write(f"\r[{bar}] {percent:3d}%")
-    sys.stdout.flush()
 
 def show_custom_dialog(parent, dialog_type, title, message, buttons=None, callback=None):
     dialog = CustomModalDialog(parent, title, message, dialog_type, buttons, callback)
@@ -70,7 +63,7 @@ def _open_folder(path: Path) -> None:
 
 def check_existing_completions() -> dict:
     print("⏳ Checking for existing completed games...")
-    progress_state = load_progress_state()
+    progress_state = log_manager.load_progress_state()
     updated = False
     
     for folder in [HTML_FOLDER, OLD_HTML_FOLDER]:
@@ -125,53 +118,10 @@ def check_existing_completions() -> dict:
                 print(f"⚠️ Error checking {html_path}: {e}")
     
     if updated:
-        save_progress_state(progress_state)
+        log_manager.save_progress_state(progress_state)
         print("💾 Updated progress state with existing completions")
     
     return progress_state
-
-def update_progress(percent: int, html_path: Path) -> None:
-    state = load_progress_state(TEMP_FOLDER)
-    state[html_path.name] = {"percent": percent}
-    save_progress_state(state, TEMP_FOLDER)
-    
-    if global_ui and hasattr(global_ui, '_row_widgets'):
-        def _safe_update():
-            if not global_ui.winfo_exists() or html_path not in global_ui._row_widgets:
-                return
-                
-            widgets = global_ui._row_widgets[html_path]
-            if widgets["progress"].winfo_exists():
-                widgets["progress"]["value"] = percent
-            if widgets["percent"].winfo_exists():
-                widgets["percent"].config(text=f"{percent}%")
-                
-            if percent == 100:
-                ctrl_btn = widgets.get("ctrl")
-                if ctrl_btn and ctrl_btn.winfo_exists():
-                    ctrl_btn.destroy()
-                    widgets.pop("ctrl", None)
-            
-            global_ui.update_idletasks()
-        
-        global_ui.after(0, _safe_update)
-
-global_ui = None
-html_path = None
-
-try:
-    import tkinter as tk
-    from tkinter import messagebox, ttk, Button, Checkbutton, Entry
-except Exception:
-    tk = None
-
-import shutil
-
-if shutil.which("zenity") is None:
-    print(
-        "⚠️  'zenity' not found – GUI prompts will fall back to console input "
-        "if tkinter cannot open a window."
-    )
 
 def _gui_yes_no(question: str) -> bool:
     if tk is None:
@@ -182,6 +132,10 @@ def _gui_yes_no(question: str) -> bool:
             if resp in ("n", "no"):
                 return False
             print("Please answer Yes or No.")
+
+    if global_ui is not None:
+        return show_custom_dialog(global_ui, "yesno", "Confirm", question)
+
     try:
         root = tk.Tk()
         root.withdraw()
@@ -214,6 +168,86 @@ def verify_api_key(stored_hash: str, input_key: str) -> bool:
         return False
 
 #----------------------------------------------------------------------
+class ProgressManager:
+    def __init__(self):
+        self._ui = None
+
+    def set_ui(self, ui) -> None:
+        self._ui = ui
+
+    @staticmethod
+    def _terminal_progress(current: int, total: int) -> None:
+        percent = int(current / total * 100)
+        filled = int(current / total * 30)
+        bar = "·" + "·" * (30 - 1)
+        bar = bar[:filled] + "●" + bar[filled + 1 :] if filled < 30 else bar
+        sys.stdout.write(f"\r[{bar}] {percent:3d}%")
+        sys.stdout.flush()
+
+    @staticmethod
+    def _noop_progress(_: int, __: int) -> None:
+        pass
+
+    def update_progress(self, percent: int, html_path: Path) -> None:
+        state = log_manager.load_progress_state(TEMP_FOLDER)
+        state[html_path.name] = {"percent": percent}
+        log_manager.save_progress_state(state, TEMP_FOLDER)
+
+        if self._ui and hasattr(self._ui, "_row_widgets"):
+            def _safe_update():
+                if not self._ui.winfo_exists() or html_path not in self._ui._row_widgets:
+                    return
+                widgets = self._ui._row_widgets[html_path]
+                if widgets["progress"].winfo_exists():
+                    widgets["progress"]["value"] = percent
+                if widgets["percent"].winfo_exists():
+                    widgets["percent"].config(text=f"{percent}%")
+                if percent == 100:
+                    ctrl_btn = widgets.get("ctrl")
+                    if ctrl_btn and ctrl_btn.winfo_exists():
+                        ctrl_btn.destroy()
+                        widgets.pop("ctrl", None)
+                self._ui.update_idletasks()
+            self._ui.after(0, _safe_update)
+
+    def _get_progress_cb(self, app_id: str, html_path: Path) -> callable:
+        if self._ui is not None and hasattr(self._ui, "_row_widgets"):
+            def _ui_row_progress(cur: int, tot: int, p=html_path):
+                widgets = self._ui._row_widgets.get(p)
+                if not widgets:
+                    return
+                if widgets["progress"].winfo_exists():
+                    widgets["progress"]["maximum"] = tot
+                    widgets["progress"]["value"] = cur
+                if widgets["percent"].winfo_exists():
+                    widgets["percent"].config(text=f"{int(cur / tot * 100)}%")
+                self._ui.update_idletasks()
+            return _ui_row_progress
+        return self._terminal_progress
+
+    def _choose_progress_cb(self, app_id: str, html_path: Path) -> callable:
+        return self._get_progress_cb(app_id, html_path)
+
+    def _ui_progress(self, cur: int, tot: int, html_path: Path, ui: "WatcherUI", folder: Path) -> None:
+        if ui is None:
+            return
+        widgets = ui._row_widgets.get(html_path)
+        if not widgets:
+            return
+        prog = widgets["progress"]
+        perc = widgets["percent"]
+        prog["maximum"] = tot
+        prog["value"] = cur
+        percent = int(cur / tot * 100)
+        perc.config(text=f"{percent}%")
+        ui.update_idletasks()
+        state = log_manager.load_progress_state(folder)
+        state[html_path.name] = {"percent": percent}
+        log_manager.save_progress_state(state, folder)
+
+progress_manager = ProgressManager()
+
+# -------------------------------------------------------------------------
 class JobTracker:
     def __init__(self):
         self._lock = threading.Lock()
@@ -249,10 +283,13 @@ def _run_main_with_progress():
 
     try:
         if global_ui is not None and html_path is not None:
-            progress_cb = _get_progress_cb("", html_path)
+            progress_cb = progress_manager._get_progress_cb("", html_path)
             globals()["_terminal_progress"] = progress_cb
 
         main()
+    except Exception as e:
+        log_manager.log_error(e, "_run_main_with_progress")
+        raise
     finally:
         if global_ui is not None:
             global_ui.progress["value"] = 1
@@ -298,6 +335,8 @@ GSE_WINDOWS.mkdir(parents=True, exist_ok=True)
 GSE_WINDOWS_CLIENT = GSE_WINDOWS / "client"
 GSE_WINDOWS_CLIENT.mkdir(parents=True, exist_ok=True)
 #-------------------------------------------------------------
+LOGS_FOLDER = APP_FOLDER / "logs"
+LOGS_FOLDER.mkdir(parents=True, exist_ok=True)
 DOWNLOADS_FOLDER = APP_FOLDER / "downloads"
 DOWNLOADS_FOLDER.mkdir(parents=True, exist_ok=True)
 TEMP_FOLDER = APP_FOLDER / "temp"
@@ -326,25 +365,245 @@ SAPI_FILE = CRYPT_FOLDER / "sapi"
 DECKEY_FILE = CRYPT_FOLDER / ".deckey"
 
 # ----------------------------------------------------------------------
-def load_update_check_time() -> float:
-    if not UPDATE_CHECK_FILE.exists():
-        return 0.0
-    try:
-        data = json.loads(UPDATE_CHECK_FILE.read_text(encoding="utf-8"))
-        return data.get("last_check", 0.0)
-    except Exception:
-        return 0.0
+class LogManager:
+    def __init__(self):
+        self.log_dir = LOGS_FOLDER
+        try:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            print(f"⚠️ Failed to create logs directory: {e}. Falling back to TEMP_FOLDER.")
+            self.log_dir = TEMP_FOLDER
+            self.log_dir.mkdir(parents=True, exist_ok=True)
 
-def save_update_check_time() -> None:
-    try:
-        UPDATE_CHECK_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(UPDATE_CHECK_FILE, "w", encoding="utf-8") as f:
-            json.dump({"last_check": time.time()}, f, indent=2)
-    except Exception as e:
-        print(f"Error saving update check time: {e}")
+        self.master_log = self.log_dir / "master_log.txt"
+        self.error_log = self.log_dir / "error_log.txt"
+        self.current_session_log = None
+        self.log_files_cache = {}
 
+        #self._write_to_master(f"=== LogManager initialized at {time.strftime('%Y-%m-%d %H:%M:%S')} ===")
+        #self._write_to_master(f"=== Session log: {self.current_session_log.name} ===")
+        self._scan_log_files()
+
+    def _write_to_master(self, message: str) -> None:
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        try:
+            with open(self.master_log, 'a', encoding='utf-8') as f:
+                f.write(f"[{timestamp}] {message}\n")
+        except Exception as e:
+            print(f"⚠️ Failed to write to master log: {e}")
+
+    def _write_to_session(self, message: str) -> None:
+        timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+        if self.current_session_log is None:
+            self.current_session_log = self.log_dir / f"session_{time.strftime('%Y%m%d_%H%M%S')}.log"
+        try:
+            with open(self.current_session_log, 'a', encoding='utf-8') as f:
+                f.write(f"[{timestamp}] {message}\n")
+        except Exception as e:
+            print(f"⚠️ Failed to write to session log: {e}")
+
+    def log_message(self, message: str, log_to_session: bool = True) -> None:
+        self._write_to_master(message)
+        if log_to_session:
+            self._write_to_session(message)
+        print(message)
+
+    def log_error(self, error: Exception, context: str = "") -> None:
+        error_msg = f"ERROR [{context}]: {str(error)}"
+        self._write_to_master(error_msg)
+        self._write_to_session(error_msg)
+        try:
+            with open(self.error_log, 'a', encoding='utf-8') as f:
+                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {error_msg}\n")
+        except Exception:
+            pass
+        print(error_msg)
+
+    def log_command(self, command: str, context: str = "") -> None:
+        self.log_message(f"COMMAND [{context}]: {command}")
+
+    def _scan_log_files(self) -> None:
+        self.log_files_cache = {}
+        try:
+            for log_file in self.log_dir.glob("*.log"):
+                self.log_files_cache[log_file.name] = log_file
+            for log_file in self.log_dir.glob("*.txt"):
+                self.log_files_cache[log_file.name] = log_file
+        except Exception as e:
+            self.log_error(e, "_scan_log_files")
+
+    @staticmethod
+    def read_local_file(filepath: str) -> str:
+        with open(filepath, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def _make_json_serialisable(self, obj) -> dict | list | str:
+        if isinstance(obj, dict):
+            return {str(k): self._make_json_serialisable(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple, set)):
+            return [self._make_json_serialisable(i) for i in obj]
+        if isinstance(obj, pathlib.Path):
+            return str(obj)
+        return obj
+
+    def load_progress_state(self, folder: Path | None = None) -> dict:
+        if folder is None:
+            folder = TEMP_FOLDER
+        file_path = PROGRESS_STATE_FILE
+        if not file_path.is_file():
+            return {}
+        try:
+            return json.loads(file_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            self.log_error(e, "load_progress_state")
+            return {}
+
+    def save_progress_state(self, state: dict, folder: Path | None = None) -> None:
+        file_path = PROGRESS_STATE_FILE
+        try:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        existing = self.load_progress_state(folder)
+        merged = {**existing, **state}
+        serialisable_state = self._make_json_serialisable(merged)
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(serialisable_state, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+        except Exception as e:
+            self.log_error(e, "save_progress_state")
+
+    def load_removed_files(self) -> set:
+        if not REMOVED_FILES_FILE.is_file():
+            return set()
+        try:
+            data = json.loads(REMOVED_FILES_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return set(data)
+            elif isinstance(data, dict) and "removed" in data:
+                return set(data["removed"])
+            return set(data.values()) if isinstance(data, dict) else set()
+        except Exception as e:
+            self.log_error(e, "load_removed_files")
+            return set()
+
+    def save_removed_files(self, removed: set) -> None:
+        try:
+            REMOVED_FILES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(REMOVED_FILES_FILE, "w", encoding="utf-8") as f:
+                json.dump(list(removed), f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            self.log_error(e, "save_removed_files")
+
+    def load_dlm_versions(self) -> dict:
+        if not DLM_VERSION_FILE.exists():
+            return {}
+        try:
+            return json.loads(DLM_VERSION_FILE.read_text(encoding="utf-8"))
+        except Exception as e:
+            self.log_error(e, "load_dlm_versions")
+            return {}
+
+    def save_dlm_versions(self, versions: dict) -> None:
+        try:
+            DLM_VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(DLM_VERSION_FILE, "w", encoding="utf-8") as f:
+                json.dump(versions, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            self.log_error(e, "save_dlm_versions")
+
+    def load_update_check_time(self) -> float:
+        if not UPDATE_CHECK_FILE.exists():
+            return 0.0
+        try:
+            data = json.loads(UPDATE_CHECK_FILE.read_text(encoding="utf-8"))
+            return data.get("last_check", 0.0)
+        except Exception as e:
+            self.log_error(e, "load_update_check_time")
+            return 0.0
+
+    def save_update_check_time(self) -> None:
+        try:
+            UPDATE_CHECK_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(UPDATE_CHECK_FILE, "w", encoding="utf-8") as f:
+                json.dump({"last_check": time.time()}, f, indent=2)
+        except Exception as e:
+            self.log_error(e, "save_update_check_time")
+
+    def load_encryption_key(self) -> bytes | None:
+        if not DECKEY_FILE.exists():
+            key = generate_key()
+            self.save_encryption_key(key)
+            return key
+        try:
+            with open(DECKEY_FILE, "rb") as f:
+                return f.read()
+        except Exception as e:
+            self.log_error(e, "load_encryption_key")
+            return None
+
+    def save_encryption_key(self, key: bytes) -> None:
+        try:
+            DECKEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(DECKEY_FILE, "wb") as f:
+                f.write(key)
+        except Exception as e:
+            self.log_error(e, "save_encryption_key")
+
+    def save_encrypted_api_key(self, api_key: str) -> None:
+        key = self.load_encryption_key()
+        if not key:
+            self.log_message("No encryption key available.", log_to_session=False)
+            return
+        try:
+            fernet = Fernet(key)
+            encrypted = fernet.encrypt(api_key.encode("utf-8"))
+            SAPI_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(SAPI_FILE, "w", encoding="utf-8") as f:
+                f.write(encrypted.decode("utf-8"))
+        except Exception as e:
+            self.log_error(e, "save_encrypted_api_key")
+
+    def load_decrypted_api_key(self) -> str | None:
+        if not SAPI_FILE.exists():
+            return None
+        key = self.load_encryption_key()
+        if not key:
+            self.log_message("No encryption key available.", log_to_session=False)
+            return None
+        try:
+            with open(SAPI_FILE, "r", encoding="utf-8") as f:
+                encrypted_key = f.read().strip()
+            fernet = Fernet(key)
+            decrypted = fernet.decrypt(encrypted_key.encode("utf-8"))
+            return decrypted.decode("utf-8")
+        except Exception as e:
+            self.log_error(e, "load_decrypted_api_key")
+            return None
+
+    def get_all_log_files(self) -> list[Path]:
+        self._scan_log_files()
+        return list(self.log_files_cache.values())
+
+    def read_log_file(self, log_path: Path) -> str:
+        try:
+            return log_path.read_text(encoding="utf-8")
+        except Exception as e:
+            self.log_error(e, f"read_log_file({log_path})")
+            return f"Error reading log file: {e}"
+
+    def get_session_log(self) -> str:
+        if self.current_session_log is None or not self.current_session_log.is_file():
+            return "No session log available."
+        return self.read_log_file(self.current_session_log)
+
+log_manager = LogManager()
+
+# ----------------------------------------------------------------------
 def should_check_for_updates() -> bool:
-    last_check = load_update_check_time()
+    last_check = log_manager.load_update_check_time()
     current_time = time.time()
     return (current_time - last_check) >= (12 * 60 * 60)
 
@@ -367,7 +626,7 @@ def check_for_updates(manual=False, target='app'):
     if not should_check_for_updates():
         return
 
-    save_update_check_time()
+    log_manager.save_update_check_time()
 
     try:
         current_version = ""
@@ -461,26 +720,6 @@ def restart_application():
 def generate_key() -> bytes:
     return Fernet.generate_key()
 
-def save_encryption_key(key: bytes) -> None:
-    try:
-        DECKEY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(DECKEY_FILE, "wb") as f:
-            f.write(key)
-    except Exception as e:
-        print(f"Error saving encryption key: {e}")
-
-def load_encryption_key() -> bytes | None:
-    if not DECKEY_FILE.exists():
-        key = generate_key()
-        save_encryption_key(key)
-        return key
-    try:
-        with open(DECKEY_FILE, "rb") as f:
-            return f.read()
-    except Exception as e:
-        print(f"Error loading encryption key: {e}")
-        return None
-
 def encrypt_api_key(api_key: str, key: bytes) -> str:
     fernet = Fernet(key)
     encrypted = fernet.encrypt(api_key.encode("utf-8"))
@@ -493,34 +732,6 @@ def decrypt_api_key(encrypted_key: str, key: bytes) -> str | None:
         return decrypted.decode("utf-8")
     except Exception as e:
         print(f"Error decrypting API key: {e}")
-        return None
-
-def save_encrypted_api_key(api_key: str) -> None:
-    key = load_encryption_key()
-    if not key:
-        print("No encryption key available.")
-        return
-    encrypted_key = encrypt_api_key(api_key, key)
-    try:
-        SAPI_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(SAPI_FILE, "w", encoding="utf-8") as f:
-            f.write(encrypted_key)
-    except Exception as e:
-        print(f"Error saving encrypted API key: {e}")
-
-def load_decrypted_api_key() -> str | None:
-    if not SAPI_FILE.exists():
-        return None
-    key = load_encryption_key()
-    if not key:
-        print("No encryption key available.")
-        return None
-    try:
-        with open(SAPI_FILE, "r", encoding="utf-8") as f:
-            encrypted_key = f.read().strip()
-        return decrypt_api_key(encrypted_key, key)
-    except Exception as e:
-        print(f"Error loading decrypted API key: {e}")
         return None
 
 def download_appid_html(appid: str) -> Path | None:
@@ -600,7 +811,10 @@ def download_appid_html(appid: str) -> Path | None:
                         webbrowser.open(url)
                         global_ui.search_entry.delete(0, tk.END)
                     elif result is False:
-                        global_ui.toggle_settings_menu()
+                        if hasattr(global_ui, 'menu_manager'):
+                           global_ui.menu_manager.toggle_menu('settings')
+                        elif hasattr(global_ui, 'toggle_settings_menu'):
+                           global_ui.toggle_settings_menu()
             return None
 
 def download_appid_via_steam_api(appid: str, api_key: str) -> Path | None:
@@ -767,9 +981,9 @@ def move_to_old(html_path: Path):
                 shutil.move(str(src_folder), str(dest_folder))
                 print(f"🗂️ Moved associated folder to {dest_folder}")
 
-            progress_state = load_progress_state()
+            progress_state = log_manager.load_progress_state()
             progress_state[html_path.name] = {"percent": 100}
-            save_progress_state(progress_state)
+            log_manager.save_progress_state(progress_state)
 
             file_status[html_path] = "done"
 
@@ -778,10 +992,6 @@ def move_to_old(html_path: Path):
 
     except Exception as e:
         print(f"⚠️ Error moving files to old folder: {e}")
-
-def read_local_file(filepath: str) -> str:
-    with open(filepath, "r", encoding="utf-8") as f:
-        return f.read()
 
 def load_processed_log(folder: Path) -> set:
     return set()
@@ -792,97 +1002,19 @@ def _hidden_cleanup_needed(html_name: str, processed: set) -> bool:
 def save_processed_log(folder: Path, processed: set) -> None:
     pass
 
-def _load_progress_state_fresh() -> dict:
-    return load_progress_state()
-
-def load_progress_state(folder: Path | None = None) -> dict:
-    if folder is None:
-        folder = TEMP_FOLDER
-    file_path = PROGRESS_STATE_FILE
-    if not file_path.is_file():
-        return {}
-    try:
-        return json.loads(file_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-def _make_json_serialisable(obj):
-    if isinstance(obj, dict):
-        return {str(k): _make_json_serialisable(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple, set)):
-        return [_make_json_serialisable(i) for i in obj]
-    if isinstance(obj, pathlib.Path):
-        return str(obj)
-    return obj
-
-
-def save_progress_state(state: dict, folder: Path | None = None) -> None:
-    if folder is None:
-        folder = APP_FOLDER
-    file_path = PROGRESS_STATE_FILE
-    try:
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
-
-    existing = {}
-    if file_path.is_file():
-        try:
-            existing = json.loads(file_path.read_text(encoding="utf-8"))
-        except Exception:
-            existing = {}
-    merged = {**existing, **state}
-    serialisable_state = _make_json_serialisable(merged)
-    try:
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(serialisable_state, f, indent=2, ensure_ascii=False)
-            f.flush()
-            os.fsync(f.fileno())
-    except Exception:
-        pass
-
-def load_removed_files() -> set:
-    if not REMOVED_FILES_FILE.is_file():
-        return set()
-    try:
-        return set(json.loads(REMOVED_FILES_FILE.read_text(encoding="utf-8")))
-    except Exception:
-        return set()
-
-def save_removed_files(removed: set) -> None:
-    try:
-        REMOVED_FILES_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(REMOVED_FILES_FILE, "w", encoding="utf-8") as f:
-            json.dump(list(removed), f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
-
-def load_dlm_versions() -> dict:
-    if not DLM_VERSION_FILE.exists():
-        return {}
-    try:
-        return json.loads(DLM_VERSION_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-def save_dlm_versions(versions: dict) -> None:
-    try:
-        DLM_VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(DLM_VERSION_FILE, "w", encoding="utf-8") as f:
-            json.dump(versions, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        print(f"Error saving DLM versions: {e}")
+def load_progress_state() -> dict:
+    return log_manager.load_progress_state()
 
 def is_version_installed(target: str, version: str) -> bool:
-    versions = load_dlm_versions()
+    versions = log_manager.load_dlm_versions()
     return versions.get(target, {}).get(version, False)
 
 def mark_version_installed(target: str, version: str, installed: bool = True) -> None:
-    versions = load_dlm_versions()
+    versions = log_manager.load_dlm_versions()
     if target not in versions:
         versions[target] = {}
     versions[target][version] = installed
-    save_dlm_versions(versions)
+    log_manager.save_dlm_versions(versions)
 
 def extract_app_id(soup: BeautifulSoup) -> str | None:
     link_tag = soup.find("link", rel="canonical")
@@ -975,47 +1107,6 @@ def clean_title(raw_title: str) -> str:
     title = raw_title.strip()
     return safe_folder_name(title)
 
-def _noop_progress(_: int, __: int) -> None:
-    pass
-
-def _ui_progress(cur: int, tot: int, html_path: Path, ui: WatcherUI, folder: Path):
-    if _prompt_handled.get(html_path, False):
-        return
-    widgets = ui._row_widgets.get(html_path)
-    if not widgets:
-        return
-    prog = widgets["progress"]
-    perc = widgets["percent"]
-    prog["maximum"] = tot
-    prog["value"] = cur
-    percent = int(cur / tot * 100)
-    percent_lbl.config(text=f"{percent}%")
-    ui.update_idletasks()
-    state = _load_progress_state_fresh()
-    state[html_path.name] = {"percent": percent}
-    save_progress_state(state, folder)
-
-# ----------------------------------------------------------------------
-def _choose_progress_cb(app_id: str, html_path: Path) -> callable:
-    if sys.stdout.isatty() and global_ui is None:
-        return _terminal_progress
-
-def _get_progress_cb(app_id: str, html_path: Path) -> callable:
-    if global_ui is not None and hasattr(global_ui, "_row_widgets"):
-        def _ui_row_progress(cur: int, tot: int, p=html_path):
-            widgets = global_ui._row_widgets.get(p)
-            if not widgets:
-                return
-            if widgets["progress"].winfo_exists():
-                widgets["progress"]["maximum"] = tot
-                widgets["progress"]["value"] = cur
-            if widgets["percent"].winfo_exists():
-                widgets["percent"].config(text=f"{int(cur / tot * 100)}%")
-            global_ui.update_idletasks()
-        return _ui_row_progress
-
-    return _terminal_progress
-
 # ----------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
@@ -1033,7 +1124,7 @@ def main():
         sys.exit(1)
 
     html_path = args.html_path
-    update_progress(0, html_path)
+    progress_manager.update_progress(0, html_path)
     if not html_path.is_file():
         old_path = OLD_HTML_FOLDER / html_path.name
         if old_path.is_file():
@@ -1042,56 +1133,13 @@ def main():
             print(f"File not found: {args.html_path}")
             sys.exit(1)
 
-    html_content = read_local_file(str(html_path))
+    html_content = log_manager.read_local_file(str(html_path))
     soup = BeautifulSoup(html_content, "html.parser")
     
     TEMP_FOLDER = APP_FOLDER / "temp"
 
-    app_id = extract_app_id(soup)
-    if app_id:
-        temp_files = TEMP_FOLDER.glob("*.txt")
-        for temp_file in temp_files:
-            if temp_file.stem == html_path.stem:
-                continue
-                
-            try:
-                for line in temp_file.read_text().splitlines():
-                    if line.startswith("appid="):
-                        existing_appid = line.split("=", 1)[1].strip()
-                        if existing_appid == app_id:
-                            print(f"⚠️ App ID {app_id} already processed with a different HTML file. Deleting duplicate.")
-                            try:
-                                html_path.unlink(missing_ok=True)
-                                folder_name = html_path.stem + "_files"
-                                folder_path = html_path.parent / folder_name
-                                if folder_path.exists():
-                                    shutil.rmtree(folder_path, ignore_errors=True)
-                                print(f"🗑️ Deleted duplicate HTML file and folder for app ID {app_id}")
-
-                                if html_path in all_html_files:
-                                    all_html_files.remove(html_path)
-                                if html_path in file_status:
-                                    file_status.pop(html_path, None)
-                            
-                                if global_ui:
-                                    global_ui.after(0, global_ui.refresh_file_list, all_html_files, file_status)
-                            
-                                progress_state = load_progress_state()
-                                if html_path.name in progress_state:
-                                    del progress_state[html_path.name]
-                                    save_progress_state(progress_state)                        
-                                return
-                            except Exception as e:
-                                print(f"⚠️ Error deleting duplicate files: {e}")
-                            return
-            except Exception:
-                continue
-    else:
-        print("No Steam app‑id found – steam_appid.txt not created.")
-        return
-
     script_dir = pathlib.Path(__file__).resolve().parent
-    progress_state = load_progress_state()
+    progress_state = log_manager.load_progress_state()
     base_folder = GAMES_ROOT / clean_title(soup.find("h1", itemprop="name").text)
     steam_settings = base_folder / "steam_settings"
     achievement_images = steam_settings / "achievement_images"
@@ -1099,7 +1147,7 @@ def main():
     TEMP_FOLDER = APP_FOLDER / "temp"
 
     processed_folder = script_dir
-    progress_state = load_progress_state(processed_folder)
+    progress_state = log_manager.load_progress_state(processed_folder)
 
     steam_settings.mkdir(parents=True, exist_ok=True)
     achievement_images.mkdir(parents=True, exist_ok=True)
@@ -1115,7 +1163,7 @@ def main():
                 dst_file = dest_dir / f
                 shutil.copy2(src_file, dst_file)
 
-    update_progress(20, html_path)
+    progress_manager.update_progress(20, html_path)
 
     app_id = extract_app_id(soup)
     if app_id:
@@ -1150,7 +1198,7 @@ def main():
     else:
         print("No Steam app‑id found – steam_appid.txt not created.")
 
-    update_progress(30, html_path)
+    progress_manager.update_progress(30, html_path)
     progress_cb = None
 
     achievements = []
@@ -1187,7 +1235,7 @@ def main():
         icon = fix_empty_icon(icon)
         icon_small = fix_empty_icon(icon_small)
 
-        update_progress(40, html_path)
+        progress_manager.update_progress(40, html_path)
 
         is_multiplayer = (
             achievement.find("div", class_="achievement_group")
@@ -1244,11 +1292,11 @@ def main():
                 mp_setting = GENERAL_SETTINGS.get("mp_prompt", "Ask")
                 if mp_setting == "Yes":
                     achievements = [a for a in achievements if not a["is_multiplayer"]]
-                    update_progress(max(current_progress, 50), html_path)
+                    progress_manager.update_progress(max(current_progress, 50), html_path)
                 elif mp_setting == "Ask":
                     if _gui_yes_no("Multiplayer achievements found. Remove them?"):
                         achievements = [a for a in achievements if not a["is_multiplayer"]]
-                        update_progress(max(current_progress, 50), html_path)
+                        progress_manager.update_progress(max(current_progress, 50), html_path)
                 _prompt_handled[html_path] = True
 
             if has_hidden_prefix and not already_done:
@@ -1257,19 +1305,19 @@ def main():
                     for a in achievements:
                         if a["description"].startswith("Hidden achievement:"):
                             a["description"] = a["description"][len("Hidden achievement:"):].lstrip()
-                    update_progress(max(current_progress, 50), html_path)
+                    progress_manager.update_progress(max(current_progress, 50), html_path)
                 elif hidden_setting == "Ask":
                     if _hidden_cleanup_needed(html_path.name, processed_html_names):
                         if _gui_yes_no('Clean descriptions that start with "Hidden achievement:"?'):
                             for a in achievements:
                                 if a["description"].startswith("Hidden achievement:"):
                                     a["description"] = a["description"][len("Hidden achievement:"):].lstrip()
-                        update_progress(max(current_progress, 50), html_path)
+                        progress_manager.update_progress(max(current_progress, 50), html_path)
                     else:
                         for a in achievements:
                             if a["description"].startswith("Hidden achievement:"):
                                 a["description"] = a["description"][len("Hidden achievement:"):].lstrip()
-                        update_progress(max(current_progress, 50), html_path)
+                        progress_manager.update_progress(max(current_progress, 50), html_path)
             _prompt_handled[html_path] = True
 
     for a in achievements:
@@ -1295,7 +1343,7 @@ def main():
         )
     else:
         already_have = set()
-        update_progress(70, html_path)
+        progress_manager.update_progress(70, html_path)
         print("No similar folder with images found; will download all needed files.")
 
     all_filenames = collect_image_names(soup)
@@ -1312,9 +1360,9 @@ def main():
     if app_id and missing_filenames:
         if _download_done.get(html_path):
             missing_filenames = []
-            update_progress(90, html_path)
+            progress_manager.update_progress(90, html_path)
         else:
-            progress_cb = _get_progress_cb(app_id, html_path) or _terminal_progress
+            progress_cb = progress_manager._get_progress_cb(app_id, html_path) or progress_manager._terminal_progress
             downloaded_cnt = download_images(
                 app_id,
                 missing_filenames,
@@ -1322,7 +1370,7 @@ def main():
                 progress_cb=progress_cb,
             )
             print(f"Downloaded {len(missing_filenames)} missing image(s) to {achievement_images}")
-            update_progress(90, html_path)
+            progress_manager.update_progress(90, html_path)
             _download_done[html_path] = True
             missing_filenames = []
             
@@ -1330,14 +1378,14 @@ def main():
                 progress_cb(1, 1)
     elif app_id:
         print("All required images already present - no download needed.")
-        update_progress(90, html_path)
-        progress_cb = _get_progress_cb(app_id, html_path) or _terminal_progress
+        progress_manager.update_progress(90, html_path)
+        progress_cb = progress_manager._get_progress_cb(app_id, html_path) or progress_manager._terminal_progress
         if progress_cb:
             progress_cb(1, 1)
     else:
         print("No Steam app-id found - image download skipped.")
-        update_progress(90, html_path)
-        progress_cb = _get_progress_cb("", html_path) or _terminal_progress
+        progress_manager.update_progress(90, html_path)
+        progress_cb = progress_manager._get_progress_cb(app_id, html_path) or progress_manager._terminal_progress
         if progress_cb:
             progress_cb(1, 1)
 
@@ -1419,9 +1467,9 @@ def main():
         except Exception as e:
             print(f"⚠️ Error during depot processing: {e}")
 
-    update_progress(95, html_path)
- 
-def _wrapped_download(app_id: str, filenames: list[str], dest: Path, cb: callable = _terminal_progress):
+    progress_manager.update_progress(95, html_path)
+
+def _wrapped_download(app_id: str, filenames: list[str], dest: Path, cb: callable = progress_manager._terminal_progress):
     html_path = globals().get("html_path")
     if isinstance(html_path, Path) and _download_done.get(html_path):
         return
@@ -1438,13 +1486,12 @@ def _wrapped_download(app_id: str, filenames: list[str], dest: Path, cb: callabl
         cb(i, len(filenames))
 
         state = load_progress_state(TEMP_FOLDER)
-        html_path = globals().get("html_path")
         if isinstance(html_path, Path):
             percent = int(i / len(filenames) * 100)
             state[html_path.name] = {"percent": percent}
-            save_progress_state(state, TEMP_FOLDER)
+            log_manager.save_progress_state(state, TEMP_FOLDER)
 
-    update_progress(100, html_path)
+    progress_manager.update_progress(100, html_path)
 
     if html_path.parent == HTML_FOLDER:
         try:
@@ -1453,9 +1500,9 @@ def _wrapped_download(app_id: str, filenames: list[str], dest: Path, cb: callabl
         except Exception as e:
             print(f"⚠️ Error moving files to old folder: {e}")
 
-    state = load_progress_state(TEMP_FOLDER)
+    state = log_manager.load_progress_state(TEMP_FOLDER)
     state[html_path.name] = {"percent": 100}
-    save_progress_state(state, TEMP_FOLDER)
+    log_manager.save_progress_state(state, TEMP_FOLDER)
 
 # ------------------------------------------------------------
 def _mark_complete_if_success(html_path: Path):
@@ -1529,7 +1576,7 @@ def _run_main_in_thread(html_path: Path):
                 print(f"Error moving files: {e}")
 
         file_status[html_path] = "done"
-        update_progress(100, html_path)
+        progress_manager.update_progress(100, html_path)
 
     finally:
         job_tracker.finish_job()
@@ -1550,7 +1597,7 @@ class SettingsManager:
                 with open(self.config_file, 'r', encoding='utf-8') as f:
                     stored_data = json.load(f)
                     self.settings = {**self.default_settings, **stored_data}
-                    self._raw_api_key = load_decrypted_api_key()
+                    self._raw_api_key = log_manager.load_decrypted_api_key()
         except Exception as e:
             print(f"Error loading {self.config_file.name}: {e}")
             self.settings = self.default_settings.copy()
@@ -1572,7 +1619,7 @@ class SettingsManager:
     def set(self, key, value, autosave=True):
         if key == "steam_api_key":
             self._raw_api_key = value
-            save_encrypted_api_key(value)
+            log_manager.save_encrypted_api_key(value)
         else:
             self.settings[key] = value
         if autosave:
@@ -1910,7 +1957,7 @@ class VersionDropdownHelper:
                 self.dropdown.bind("<<ComboboxSelected>>", lambda e: self.on_select_callback(self.var.get()))
 
     def _get_installed_versions(self):
-        versions = load_dlm_versions()
+        versions = log_manager.load_dlm_versions()
         target_versions = versions.get(self.target, {})
         return [v for v, installed in target_versions.items() if installed]
 
@@ -1983,9 +2030,12 @@ class CustomModalDialog:
         button_frame = Frame(self.dialog_frame, bg=theme['widget_bg'])
         button_frame.pack(fill="x")
 
+        button_container = Frame(button_frame, bg=theme['widget_bg'])
+        button_container.pack(expand=True)
+
         for i, btn in enumerate(self.buttons):
             button = Button(
-                button_frame,
+                button_container,
                 text=btn["text"],
                 command=lambda v=btn["value"]: self._on_button_click(v),
                 bg=theme['button_bg'],
@@ -2879,6 +2929,117 @@ class DownloadManager:
         return entry
 
 # ------------------------------------------------------------
+class MenuManager:
+    def __init__(self, ui):
+        self.ui = ui
+        self.current_menu = None
+        self.menu_frames = {}
+        self.menu_buttons = {}
+        self.menu_icons = {
+            'settings': {'open': '⚙️', 'closed': '❌'},
+            'logs': {'open': '📜', 'closed': '❌'}
+        }
+
+        self.open_menus = set()
+
+    def register_menu(self, menu_name: str, frame, button=None):
+        self.menu_frames[menu_name] = frame
+        if button:
+            self.menu_buttons[menu_name] = button
+
+    def is_menu_open(self, menu_name: str) -> bool:
+        return menu_name in self.open_menus
+
+    def get_open_menu(self) -> str | None:
+        return self.current_menu
+
+    def close_all_menus(self):
+        for menu_name in list(self.open_menus):
+            self._close_menu(menu_name)
+        self.open_menus.clear()
+        self.current_menu = None
+        self._update_button_icons()
+
+    def _close_menu(self, menu_name: str):
+        frame = self.menu_frames.get(menu_name)
+        if frame and frame.winfo_exists():
+            frame.pack_forget()
+
+        if menu_name in self.open_menus:
+            self.open_menus.discard(menu_name)
+        if self.current_menu == menu_name:
+            self.current_menu = None
+
+    def close_current_menu(self):
+        if self.current_menu:
+            self._close_menu(self.current_menu)
+            self.current_menu = None
+            self._update_button_icons()
+
+    def toggle_menu(self, menu_name: str):
+        if self.current_menu == menu_name:
+            self.close_current_menu()
+            return
+
+        self.close_all_menus()
+
+        frame = self.menu_frames.get(menu_name)
+
+        if menu_name == 'logs':
+            if hasattr(self.ui, 'show_log_viewer'):
+                self.ui.show_log_viewer()
+            self.current_menu = menu_name
+            self.open_menus.add(menu_name)
+            self._update_button_icons()
+
+        elif frame and not frame.winfo_ismapped():
+            if menu_name == 'settings':
+                frame.pack(fill="both", expand=True)
+                if hasattr(self.ui, 'populate_settings'):
+                    self.ui.populate_settings()
+            elif menu_name == 'attention':
+                frame.pack(fill="x", side="bottom", ipady=10)
+                if hasattr(self.ui, 'attention_visible'):
+                    self.ui.attention_visible = True
+
+            self.current_menu = menu_name
+            self.open_menus.add(menu_name)
+            self._update_button_icons()
+
+    def _update_button_icons(self):
+        for menu_name, button in self.menu_buttons.items():
+            if button and button.winfo_exists():
+                if menu_name in self.open_menus:
+                    button.config(text=self.menu_icons[menu_name]['closed'])
+                else:
+                    button.config(text=self.menu_icons[menu_name]['open'])
+
+    def show_menu(self, menu_name: str):
+        self.close_all_menus()
+        frame = self.menu_frames.get(menu_name)
+
+        if menu_name == 'logs':
+            if hasattr(self.ui, 'show_log_viewer'):
+                self.ui.show_log_viewer()
+            self.current_menu = menu_name
+            self.open_menus.add(menu_name)
+
+        elif frame:
+            if menu_name == 'settings':
+                frame.pack(fill="both", expand=True)
+                if hasattr(self.ui, 'populate_settings'):
+                    self.ui.populate_settings()
+            elif menu_name == 'attention':
+                frame.pack(fill="x", side="bottom", ipady=10)
+                if hasattr(self.ui, 'attention_visible'):
+                    self.ui.attention_visible = True
+
+            self.current_menu = menu_name
+            self.open_menus.add(menu_name)
+
+        self._update_button_icons()
+
+# ------------------------------------------------------------
 class WatcherUI(tk.Tk):
     DARK_THEME = {
         'bg': '#2d2d2d',
@@ -2915,6 +3076,8 @@ class WatcherUI(tk.Tk):
         self.search_btn.config(bg=theme['button_bg'], fg=theme['fg'])
         self.mass_close_btn.config(bg=theme['button_bg'], fg=theme['fg'])
         self.settings_btn.config(bg=theme['button_bg'], fg=theme['fg'])
+        self.log_btn.config(bg=theme['button_bg'], fg=theme['fg'])
+        self.theme_btn.config(text='🌚' if self.dark_mode else '🌞')
 
         self.style.configure('TNotebook', background=theme['bg'])
         self.style.configure('TNotebook.Tab', background=theme['widget_bg'], foreground=theme['fg'], lightcolor=theme['border'], borderwidth=0)
@@ -3072,16 +3235,6 @@ class WatcherUI(tk.Tk):
         auto_update = self.general_settings.get("auto_update", True)
         self.manual_update_btn.config(state=tk.DISABLED if auto_update else tk.NORMAL)
         self.downgrade_btn.config(state=tk.NORMAL if not auto_update else tk.DISABLED)
-
-    def toggle_settings_menu(self):
-        if self.settings_frame.winfo_ismapped():
-            self.settings_btn.lift()
-            self.settings_frame.pack_forget()
-            self.settings_btn.config(text="⚙️")
-        else:
-            self.settings_frame.pack(fill="both", expand=True)
-            self.settings_btn.config(text="❌")
-            self.populate_settings()
 
     def _delete_api_key(self):
         self.steam_api_key_var.set("")
@@ -3461,7 +3614,7 @@ class WatcherUI(tk.Tk):
 
         def on_key_release(event):
             GENERAL_SETTINGS._raw_api_key = self.steam_api_key_var.get()
-            save_encrypted_api_key(self.steam_api_key_var.get())
+            log_manager.save_encrypted_api_key(self.steam_api_key_var.get())
             reset_mask_timer()
 
         def on_focus_in(event):
@@ -3471,7 +3624,7 @@ class WatcherUI(tk.Tk):
         def on_focus_out(event):
             self.steam_api_key_entry.config(show="*")
             GENERAL_SETTINGS._raw_api_key = self.steam_api_key_var.get()
-            save_encrypted_api_key(self.steam_api_key_var.get())
+            log_manager.save_encrypted_api_key(self.steam_api_key_var.get())
 
         self.steam_api_key_entry.bind("<KeyRelease>", on_key_release)
         self.steam_api_key_entry.bind("<FocusIn>", on_focus_in)
@@ -3600,7 +3753,7 @@ class WatcherUI(tk.Tk):
 
     def downgrader(self, target: str = "app"):
         if target == "app":
-            save_update_check_time()
+            log_manager.save_update_check_time()
 
             try:
                 current_version = VERSION_FILE.read_text().strip() if VERSION_FILE.exists() else "v0.0"
@@ -3739,6 +3892,7 @@ class WatcherUI(tk.Tk):
     def __init__(self, file_queue: queue.Queue):
         super().__init__()
         self.dark_mode = False
+        self.menu_manager = MenuManager(self)
         self.selected_version = None
         self.steamless_releases_loaded = False
         self.steamless_window_id = None
@@ -3777,7 +3931,7 @@ class WatcherUI(tk.Tk):
         )
 
         self.title("SSG: Watching for HTML files")
-        self.geometry("800x850")
+        self.geometry("800x1000")
         self.resizable(False, False)
 
         self.top_bar = Frame(self)
@@ -3854,11 +4008,25 @@ class WatcherUI(tk.Tk):
         )
         self.theme_btn.pack(side="left", padx=(0, 10))
 
+        self.log_btn = Button(
+            self.right_button_frame,
+            text="📜",
+            font=('Arial', 8),
+            command=lambda: self.menu_manager.toggle_menu('logs'),
+            bd=0,
+            relief='flat',
+            bg=self.LIGHT_THEME['button_bg'],
+            fg=self.LIGHT_THEME['fg']
+        )
+        self.log_btn.pack(side="left", padx=(0, 10))
+
+        self.menu_manager.register_menu('logs', None, self.log_btn)
+
         self.settings_btn = Button(
             self.right_button_frame,
             text="⚙️",
             font=('Arial', 8),
-            command=self.toggle_settings_menu,
+            command=lambda: self.menu_manager.toggle_menu('settings'),
             bd=0,
             relief='flat',
             bg=self.LIGHT_THEME['button_bg'],
@@ -3868,6 +4036,8 @@ class WatcherUI(tk.Tk):
 
         self.settings_frame = Frame(self)
         self.settings_frame.pack_propagate(False)
+
+        self.menu_manager.register_menu('settings', self.settings_frame, self.settings_btn)
 
         self.list_frame = Frame(self)
         self.list_frame.pack(fill="both", expand=True, pady=(10, 0))
@@ -3893,6 +4063,8 @@ class WatcherUI(tk.Tk):
         self.attention_frame = Frame(self)
         self.attention_visible = False
         self.current_html_path = None
+
+        self.menu_manager.register_menu('attention', self.attention_frame)
 
         self._update_mass_close_btn()
 
@@ -4073,7 +4245,7 @@ class WatcherUI(tk.Tk):
                 row_width = 760 - inset_pad - right_pad
                 title_max_px = 180
 
-                current_progress_state = load_progress_state()
+                current_progress_state = log_manager.load_progress_state()
 
                 for idx, path in enumerate(files_copy):
                     try:
@@ -4152,7 +4324,7 @@ class WatcherUI(tk.Tk):
                         path_lbl.pack(side="top", pady=1)
                         path_lbl.bind("<Button-1>", lambda e, p=game_folder_path: _open_folder(p))
 
-                        self.progress_state = load_progress_state()
+                        self.progress_state = log_manager.load_progress_state()
 
                         saved = self.progress_state.get(path.name)
                         if saved:
@@ -4195,7 +4367,7 @@ class WatcherUI(tk.Tk):
             self.active_menu = None
             self.active_menu_path = None
 
-        progress_state = load_progress_state()
+        progress_state = log_manager.load_progress_state()
         file_progress = progress_state.get(html_path.name, {}).get("percent", 0)
 
         queued, active = job_tracker.snapshot()
@@ -4222,11 +4394,17 @@ class WatcherUI(tk.Tk):
         self._show_attention_panel()
 
     def _show_attention_panel(self):
-        if self.attention_visible:
-            self._hide_attention_panel()
-            return
-
         theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+
+        if hasattr(self, 'menu_manager'):
+            if self.menu_manager.is_menu_open('attention'):
+                self._hide_attention_panel()
+                return
+            self.menu_manager.show_menu('attention')
+        else:
+            if self.attention_visible:
+                self._hide_attention_panel()
+                return
 
         for widget in self.attention_frame.winfo_children():
             widget.destroy()
@@ -4294,12 +4472,15 @@ class WatcherUI(tk.Tk):
     def _hide_attention_panel(self):
         self.attention_frame.pack_forget()
         self.attention_visible = False
+        if hasattr(self, 'menu_manager'):
+            self.menu_manager._close_menu('attention')
+            self.menu_manager._update_button_icons()
 
     def _execute_attention_action(self, action: str):
         html_path = self.current_html_path
 
         if action == "reprocess":
-            progress_state = load_progress_state()
+            progress_state = log_manager.load_progress_state()
 
             temp_file = TEMP_FOLDER / f"{html_path.name}.txt"
             temp_file.unlink(missing_ok=True)
@@ -4317,7 +4498,7 @@ class WatcherUI(tk.Tk):
                 _prompt_handled.pop(html_path, None)
             _download_done.pop(html_path, None)
             progress_state.pop(html_path.name, None)
-            save_progress_state(progress_state)
+            log_manager.save_progress_state(progress_state)
 
             if html_path in all_html_files:
                 all_html_files.remove(html_path)
@@ -4788,7 +4969,7 @@ class WatcherUI(tk.Tk):
 
         title = Label(
             self.output_frame,
-            text="Steamless Stub Removal Output (Live)",
+            text="Stub Removal Output",
             font=("Helvetica", 14, "bold"),
             bg=theme['bg'],
             fg=theme['fg']
@@ -4973,6 +5154,233 @@ class WatcherUI(tk.Tk):
         self.stub_removal_options = {}
 
         self.destroy()
+
+# ------------------------------------------------------------
+    def show_log_viewer(self) -> None:
+        if hasattr(self, 'log_viewer_frame') and self.log_viewer_frame is not None:
+            if self.log_viewer_frame.winfo_exists():
+                self.log_viewer_frame.destroy()
+            self.log_viewer_frame = None
+
+        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        self.log_viewer_frame = Frame(self, bg=theme['bg'])
+        self.log_viewer_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        if hasattr(self, 'menu_manager'):
+            self.menu_manager.menu_frames['logs'] = self.log_viewer_frame
+            self.menu_manager.current_menu = 'logs'
+            self.menu_manager.open_menus.add('logs')
+            self.menu_manager._update_button_icons()
+
+        canvas_frame = Frame(self.log_viewer_frame, bg=theme['bg'])
+        canvas_frame.pack(fill="x", pady=(10, 0))
+
+        Label(
+            canvas_frame,
+            text="Application Logs",
+            font=("Helvetica", 14, "bold"),
+            bg=theme['bg'],
+            fg=theme['fg']
+        ).pack(pady=(0, 2))
+
+        self.log_files_canvas = Canvas(canvas_frame, bg=theme['bg'], borderwidth=0, highlightthickness=0, height=100)
+        self.log_files_scrollbar = Scrollbar(canvas_frame, orient="vertical", command=self.log_files_canvas.yview)
+        self.log_files_canvas.configure(yscrollcommand=self.log_files_scrollbar.set)
+        self.log_files_scrollbar.pack(side="right", fill="y")
+        self.log_files_canvas.pack(side="left", fill="both", expand=True)
+
+        self.log_files_inner_frame = Frame(self.log_files_canvas, bg=theme['bg'])
+        self.log_files_canvas.create_window((0, 0), window=self.log_files_inner_frame, anchor="nw")
+
+        self.log_files_inner_frame.bind("<Configure>", lambda e: self.log_files_canvas.configure(scrollregion=self.log_files_canvas.bbox("all")))
+        self.log_files_canvas.bind("<Configure>", lambda e: self.log_files_canvas.itemconfig("all", width=e.width))
+
+        self._populate_log_files_list(theme)
+
+        self.current_log_path = None
+
+        text_frame = Frame(self.log_viewer_frame, bg=theme['bg'])
+        text_frame.pack(fill="both", expand=False, pady=(8, 5))
+
+        scrollbar = Scrollbar(text_frame)
+        scrollbar.pack(side="right", fill="y")
+
+        self.log_text = tk.Text(
+            text_frame,
+            wrap="word",
+            bg=theme['widget_bg'],
+            fg=theme['fg'],
+            insertbackground=theme['fg'],
+            yscrollcommand=scrollbar.set,
+            font=("Courier", 10),
+            state="normal",
+            takefocus=0
+        )
+        self.log_text.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.log_text.yview)
+
+        session_log = log_manager.get_session_log()
+        self.log_text.insert("end", session_log)
+        self.log_text.config(state="disabled")
+        self.log_text.see("end")
+
+        btn_frame = Frame(self.log_viewer_frame, bg=theme['bg'])
+        btn_frame.pack(fill="x", pady=5)
+
+        Button(
+            btn_frame,
+            text="📋 Copy Log",
+            command=self._copy_log,
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            padx=10,
+            pady=5
+        ).pack(side="left", padx=(0, 5))
+
+        Button(
+            btn_frame,
+            text="💾 Save Log",
+            command=self._save_log,
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            padx=10,
+            pady=5
+        ).pack(side="left", padx=(0, 5))
+
+        self.open_file_btn = Button(
+            btn_frame,
+            text="📄 Open File",
+            command=self._open_log_file_external,
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            padx=10,
+            pady=5
+        )
+
+        self.close_log_btn = Button(
+            btn_frame,
+            text="❌ Close Log",
+            command=self._close_current_log,
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            padx=10,
+            pady=5
+        )
+
+    def hide_log_viewer(self) -> None:
+        if hasattr(self, 'log_viewer_frame') and self.log_viewer_frame.winfo_exists():
+            self.log_viewer_frame.destroy()
+        self.log_viewer_frame = None
+        if hasattr(self, 'log_text'):
+            self.log_text = None
+        if hasattr(self, 'current_log_path'):
+            self.current_log_path = None
+        if hasattr(self, 'menu_manager'):
+            self.menu_manager._close_menu('logs')
+            self.menu_manager._update_button_icons()
+
+    def _populate_log_files_list(self, theme: dict) -> None:
+        for widget in self.log_files_inner_frame.winfo_children():
+            widget.destroy()
+
+        log_files = log_manager.get_all_log_files()
+        log_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+
+        for log_file in log_files:
+            btn = Button(
+                self.log_files_inner_frame,
+                text=log_file.name,
+                command=lambda lf=log_file: self._show_log_file(lf),
+                bg=theme['button_bg'],
+                fg=theme['fg'],
+                bd=0,
+                relief='flat',
+                anchor="w"
+            )
+            btn.pack(fill="x", pady=2)
+
+    def _show_log_file(self, log_path: Path) -> None:
+        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+
+        log_content = log_manager.read_log_file(log_path)
+        self.log_text.config(state="normal")
+        self.log_text.delete(1.0, "end")
+        self.log_text.insert("end", log_content)
+        self.log_text.config(state="disabled")
+        self.log_text.see("end")
+
+        self.current_log_path = log_path
+
+        self.open_file_btn.pack(side="left", padx=(0, 5))
+        self.close_log_btn.pack(side="left", padx=(0, 5))
+
+    def _close_current_log(self) -> None:
+        session_log = log_manager.get_session_log()
+        self.log_text.config(state="normal")
+        self.log_text.delete(1.0, "end")
+        self.log_text.insert("end", session_log)
+        self.log_text.config(state="disabled")
+        self.log_text.see("end")
+
+        self.open_file_btn.pack_forget()
+        self.close_log_btn.pack_forget()
+        self.current_log_path = None
+
+    def _copy_log(self) -> None:
+        if hasattr(self, 'log_text') and self.log_text:
+            log_content = self.log_text.get("1.0", "end-1c")
+            try:
+                self.clipboard_clear()
+                self.clipboard_append(log_content)
+                show_custom_dialog(self, "info", "Copied", "Log copied to clipboard!")
+            except Exception as e:
+                show_custom_dialog(self, "error", "Error", f"Failed to copy log: {e}")
+
+    def _save_log(self) -> None:
+        if hasattr(self, 'log_text') and self.log_text:
+            log_content = self.log_text.get("1.0", "end-1c")
+            timestamp = time.strftime('%Y%m%d_%H%M%S')
+            log_path = log_manager.log_dir / f"saved_log_{timestamp}.log"
+
+            try:
+                log_path.write_text(log_content, encoding='utf-8')
+                show_custom_dialog(self, "info", "Saved", f"Log saved to:\n{log_path}")
+                # Refresh log files list
+                self._populate_log_files_list(self.DARK_THEME if self.dark_mode else self.LIGHT_THEME)
+            except Exception as e:
+                show_custom_dialog(self, "error", "Error", f"Failed to save log: {e}")
+
+    def _open_log_file_external(self) -> None:
+        if hasattr(self, 'current_log_path') and self.current_log_path:
+            if sys.platform.startswith("win"):
+                try:
+                    os.startfile(str(self.current_log_path))
+                except Exception as e:
+                    show_custom_dialog(self, "error", "Error", f"Failed to open file: {e}")
+            else:
+                editors = [
+                    "xdg-open",
+                    "pluma",
+                    "gedit",
+                    "mousepad",
+                    "leafpad",
+                    "kate",
+                    "nano",
+                    "vim",
+                    "emacs",
+                    "mousepad",
+                    "geany"
+                ]
+                opened = False
+                for editor in editors:
+                    try:
+                        subprocess.run([editor, str(self.current_log_path)], check=True)
+                        opened = True
+                        break
+                    except Exception:
+                        continue
+                if not opened:
+                    show_custom_dialog(self, "error", "Error", "Could not open file with any available editor.")
 
     # ------------------------------------------------------------
     def _init_game_config(self):
@@ -5963,10 +6371,10 @@ class WatcherUI(tk.Tk):
         self.refresh_file_list(all_html_files, file_status)
         self.after(100, self._update_mass_close_btn)
 
-        removed_files = load_removed_files()
+        removed_files = log_manager.load_removed_files()
         for html_path in files_to_delete:
             removed_files.add(html_path.name)
-        save_removed_files(removed_files)
+        log_manager.save_removed_files(removed_files)
 
     # ------------------------------------------------------------
     def _confirm_remove(self, html_path: Path) -> None:
@@ -6096,9 +6504,9 @@ class WatcherUI(tk.Tk):
             _prompt_handled.pop(html_path, None)
         _download_done.pop(html_path, None)
 
-        removed_files = load_removed_files()
+        removed_files = log_manager.load_removed_files()
         removed_files.add(html_path.name)
-        save_removed_files(removed_files)
+        log_manager.save_removed_files(removed_files)
 
     # ------------------------------------------------------------
     def _on_close(self):
@@ -6113,6 +6521,8 @@ class WatcherUI(tk.Tk):
             self.stub_removal_options_frame.destroy()
         if hasattr(self, 'tooltip_label') and self.tooltip_label:
             self.tooltip_label.destroy()
+        if hasattr(self, 'menu_manager'):
+            self.menu_manager.close_all_menus()
         self.destroy()
 
     @property
@@ -6124,7 +6534,7 @@ global_ui = None
 # ------------------------------------------------------------
 def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Event):
     global all_html_files, file_status
-    progress_state = load_progress_state()
+    progress_state = log_manager.load_progress_state()
     _progress_path = PROGRESS_STATE_FILE
     _last_mtime = _progress_path.stat().st_mtime if _progress_path.is_file() else 0
 
@@ -6134,7 +6544,7 @@ def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Ev
             if _progress_path.is_file():
                 cur_mtime = _progress_path.stat().st_mtime
                 if cur_mtime != _last_mtime:
-                    progress_state = load_progress_state()
+                    progress_state = log_manager.load_progress_state()
                     _last_mtime = cur_mtime
         except Exception:
             pass
@@ -6142,18 +6552,18 @@ def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Ev
     while not stop_flag.is_set():
         _progress_reload_json()
         processed = set(all_html_files)
-        removed_files = load_removed_files()
+        removed_files = log_manager.load_removed_files()
         current_html = {p for p in folder.iterdir() if p.suffix.lower() == ".html"}
         new_files = current_html - processed
 
         if new_files:
-            removed_files = load_removed_files()
+            removed_files = log_manager.load_removed_files()
             print(f"Detected new HTML files: {new_files}")
             for new_html in sorted(new_files):
                 if new_html.name in removed_files:
                     if _gui_yes_no("You are about to download a game you removed. Would you like to continue?"):
                         removed_files.discard(new_html.name)
-                        save_removed_files(removed_files)
+                        log_manager.save_removed_files(removed_files)
                         processed.add(new_html)
                         all_html_files.append(new_html)
                         file_status[new_html] = "waiting"
@@ -6195,7 +6605,7 @@ def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Ev
 
 if __name__ == "__main__":
     if GENERAL_SETTINGS.get("auto_update", True):
-        save_update_check_time()
+        log_manager.save_update_check_time()
 
     if GENERAL_SETTINGS.get("auto_update", True):
         threading.Thread(target=check_for_updates, daemon=True).start()
@@ -6232,6 +6642,8 @@ if __name__ == "__main__":
 
         try:
             global_ui = WatcherUI(file_queue)
+            progress_manager.set_ui(global_ui)
+            log_manager._ui = global_ui
             global_ui.refresh_file_list(all_html_files, file_status)
         except Exception as e:
             print(f"Error during GUI initialization: {e}")
