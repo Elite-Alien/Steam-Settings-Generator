@@ -54,15 +54,15 @@ def _open_folder(path: Path) -> None:
                 except (FileNotFoundError, subprocess.CalledProcessError):
                     continue
                 except Exception as e:
-                    print(f"Tried method but got error: {e}")
+                    log_manager.log_message(f"Tried method but got error: {e}")
 
-            print(f"❌ Could not open folder. Path: {path}")
-            print("   Tried all known methods. Please open manually.")
+            log_manager.log_message(f"❌ Could not open folder. Path: {path}")
+            log_manager.log_message("   Tried all known methods. Please open manually.")
     except Exception as e:
-        print(f"⚠️ Error opening folder: {e}")
+        log_manager.log_message(f"⚠️ Error opening folder: {e}")
 
 def check_existing_completions() -> dict:
-    print("⏳ Checking for existing completed games...")
+    log_manager.log_message("⏳ Checking for existing completed games...")
     progress_state = log_manager.load_progress_state()
     updated = False
     
@@ -112,14 +112,14 @@ def check_existing_completions() -> dict:
                 if required_images.issubset(existing_images):
                     progress_state[html_path.name] = {"percent": 100}
                     updated = True
-                    print(f"✅ Found complete installation for {html_path.name}")
+                    log_manager.log_message(f"✅ Found complete installation for {html_path.name}")
                     
             except Exception as e:
-                print(f"⚠️ Error checking {html_path}: {e}")
+                log_manager.log_error(Exception(f"⚠️ Error checking {html_path}: {e}"), "check_existing_completions")
     
     if updated:
         log_manager.save_progress_state(progress_state)
-        print("💾 Updated progress state with existing completions")
+        log_manager.log_message("💾 Updated progress state with existing completions")
     
     return progress_state
 
@@ -377,12 +377,29 @@ class LogManager:
 
         self.master_log = self.log_dir / "master_log.txt"
         self.error_log = self.log_dir / "error_log.txt"
+        self._ui = None
         self.current_session_log = None
         self.log_files_cache = {}
 
         #self._write_to_master(f"=== LogManager initialized at {time.strftime('%Y-%m-%d %H:%M:%S')} ===")
         #self._write_to_master(f"=== Session log: {self.current_session_log.name} ===")
         self._scan_log_files()
+
+        retention_days = 1
+        try:
+            retention_days = GENERAL_SETTINGS.get("log_settings", {}).get("retention_days", 1)
+        except (NameError, AttributeError):
+            retention_days = 1
+        self.cleanup_old_logs(days_to_keep=retention_days)
+
+        self._stub_executable_path: Path | None = None
+        self._stub_executable_name: str | None = None
+        self._stub_output_file: Path | None = None
+        self._stub_process: subprocess.Popen | None = None
+        self._stub_monitor_thread: threading.Thread | None = None
+        self._stub_stop_event = threading.Event()
+        self._stub_complete_callback = None
+        self._stub_lock = threading.Lock()
 
     def _write_to_master(self, message: str) -> None:
         timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -418,6 +435,20 @@ class LogManager:
         except Exception:
             pass
         print(error_msg)
+
+    def set_ui(self, ui) -> None:
+        self._ui = ui
+
+    def log_to_ui(self, message: str, context: str = "") -> None:
+        self.log_message(message, context)
+        if hasattr(self, '_ui') and self._ui and hasattr(self._ui, 'output_text') and self._ui.output_text.winfo_exists():
+            try:
+                self._ui.output_text.config(state="normal")
+                self._ui.output_text.insert("end", f"{message}\n")
+                self._ui.output_text.see("end")
+                self._ui.output_text.config(state="disabled")
+            except Exception as e:
+                self.log_error(e, "log_to_ui")
 
     def log_command(self, command: str, context: str = "") -> None:
         self.log_message(f"COMMAND [{context}]: {command}")
@@ -599,6 +630,76 @@ class LogManager:
             return "No session log available."
         return self.read_log_file(self.current_session_log)
 
+    def cleanup_old_logs(self, days_to_keep: int = 1) -> int:
+        from datetime import datetime, timedelta
+        import time as time_module
+
+        if days_to_keep < 0:
+            days_to_keep = 1
+
+        cutoff = datetime.now() - timedelta(days=days_to_keep)
+        cutoff_timestamp = cutoff.timestamp()
+
+        deleted_count = 0
+        log_dir = LOGS_FOLDER
+        if not log_dir.exists():
+            return 0
+
+        if self.current_session_log is None:
+            self.current_session_log = self.log_dir / f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+        log_files = []
+        for log_path in log_dir.iterdir():
+            if log_path.suffix.lower() in (".log", ".txt"):
+                log_files.append(log_path)
+
+
+        log_files.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0)
+
+        for log_path in log_files:
+
+            try:
+                if log_path == self.current_session_log:
+                    continue
+            except Exception:
+                continue
+
+            try:
+                try:
+                    mtime = log_path.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+                except PermissionError:
+                    self.log_message(f"⚠️  No permission to access: {log_path.name}")
+                    continue
+
+                if mtime < cutoff_timestamp:
+                    max_retries = 3
+                    retry_delay = 0.5
+                    for attempt in range(max_retries):
+                        try:
+                            log_path.unlink()
+                            deleted_count += 1
+                            self.log_message(f"🗑️  Deleted old log: {log_path.name}")
+                            break
+                        except PermissionError as e:
+
+                            if attempt < max_retries - 1:
+                                self.log_message(f"⚠️  File locked, retrying ({attempt + 1}/{max_retries}): {log_path.name}")
+                                time_module.sleep(retry_delay)
+                                retry_delay *= 2
+                            else:
+                                self.log_error(e, f"cleanup_old_logs({log_path}) - File locked after retries")
+                        except FileNotFoundError:
+                            break
+                        except Exception as e:
+                            self.log_error(e, f"cleanup_old_logs({log_path})")
+                            break
+            except Exception as e:
+                self.log_error(e, f"cleanup_old_logs({log_path})")
+
+        return deleted_count
+
 log_manager = LogManager()
 
 # ----------------------------------------------------------------------
@@ -633,7 +734,7 @@ def check_for_updates(manual=False, target='app'):
         if cfg["version_file"].exists():
             current_version = cfg["version_file"].read_text(encoding="utf-8").strip()
             if manual:
-                print(f"Current {cfg['success_msg']} version: {current_version}")
+                log_manager.log_message(f"Current {cfg['success_msg']} version: {current_version}")
 
         response = requests.get(cfg["release_url"], timeout=10)
         response.raise_for_status()
@@ -641,7 +742,7 @@ def check_for_updates(manual=False, target='app'):
         latest_tag = release_data["tag_name"]
 
         if manual:
-            print(f"Latest {cfg['success_msg']} version: {latest_tag}")
+            log_manager.log_message(f"Latest {cfg['success_msg']} version: {latest_tag}")
 
         if latest_tag != current_version:
             msg = f"New {cfg['success_msg']} version available: {latest_tag}\nDownload and install?"
@@ -689,7 +790,7 @@ def check_for_updates(manual=False, target='app'):
                         f"{cfg['success_msg']} files updated!"
                     )
             else:
-                print(f"{cfg['success_msg']} update canceled by user")
+                log_manager.log_message(f"{cfg['success_msg']} update canceled by user")
         else:
             if manual:
                 msg = f"You have the latest {cfg['success_msg']} version"
@@ -700,10 +801,10 @@ def check_for_updates(manual=False, target='app'):
                 else:
                     messagebox.showinfo(f"{cfg['success_msg']} Update Check", msg)
             else:
-                print(f"You have the latest {cfg['success_msg']} version")
+                log_manager.log_message(f"You have the latest {cfg['success_msg']} version")
 
     except Exception as e:
-        print(f"⚠️ {cfg['success_msg']} update failed: {e}")
+        log_manager.log_error(Exception(f"{cfg['success_msg']} update failed: {e}"), "check_for_updates")
         if manual:
             error_msg = f"Failed to update {cfg['success_msg']}: {str(e)}"
             if global_ui is not None:
@@ -731,7 +832,7 @@ def decrypt_api_key(encrypted_key: str, key: bytes) -> str | None:
         decrypted = fernet.decrypt(encrypted_key.encode("utf-8"))
         return decrypted.decode("utf-8")
     except Exception as e:
-        print(f"Error decrypting API key: {e}")
+        log_manager.log_error(Exception(f"Error decrypting API key: {e}"), "decrypt_api_key")
         return None
 
 def download_appid_html(appid: str) -> Path | None:
@@ -739,7 +840,7 @@ def download_appid_html(appid: str) -> Path | None:
 
     appid = appid.strip()
     if not appid.isdigit():
-        print(f"⚠️ Invalid AppID: {appid}")
+        log_manager.log_error(f"⚠️ Invalid AppID: {appid}")
         if global_ui:
             show_custom_dialog(global_ui, "Invalid AppID", f"{appid} is not a valid numeric AppID")
         return None
@@ -761,7 +862,7 @@ def download_appid_html(appid: str) -> Path | None:
     }
 
     try:
-        print(f"Downloading SteamDB page for AppID {appid}...")
+        log_manager.log_message(f"Downloading SteamDB page for AppID {appid}...")
 
         session = requests.Session()
         session.headers.update(headers)
@@ -775,7 +876,7 @@ def download_appid_html(appid: str) -> Path | None:
         HTML_FOLDER.mkdir(parents=True, exist_ok=True)
         html_path = HTML_FOLDER / f"{clean_name}.html"
         html_path.write_text(response.text, encoding="utf-8")
-        print(f"✅ Saved HTML to {html_path}")
+        log_manager.log_message(f"✅ Saved HTML to {html_path}")
 
         if html_path not in all_html_files:
             all_html_files.append(html_path)
@@ -790,11 +891,11 @@ def download_appid_html(appid: str) -> Path | None:
 
     except requests.exceptions.RequestException as e:
         error_msg = str(e)
-        print(f"❌ SteamDB download failed: {error_msg}")
+        log_manager.log_message(f"❌ SteamDB download failed: {error_msg}")
 
         steam_api_key = GENERAL_SETTINGS.get("steam_api_key", "").strip()
         if steam_api_key:
-            print(f"🔄 Trying Steam API with key...")
+            log_manager.log_message(f"🔄 Trying Steam API with key...")
             return download_appid_via_steam_api(appid, steam_api_key)
         else:
             if global_ui:
@@ -827,7 +928,7 @@ def download_appid_via_steam_api(appid: str, api_key: str) -> Path | None:
         store_data = store_response.json()
 
         if str(appid) not in store_data or not store_data[str(appid)].get('success', False):
-            print(f"❌ Game {appid} not found on Steam Store")
+            log_manager.log_error(f"❌ Game {appid} not found on Steam Store")
             if global_ui:
                 show_custom_dialog(global_ui, "Game Not Found", f"AppID {appid} not found")
             return None
@@ -846,7 +947,7 @@ def download_appid_via_steam_api(appid: str, api_key: str) -> Path | None:
         data = response.json()
 
         if not data.get('game', {}).get('availableGameStats', {}).get('achievements'):
-            print(f"⚠️ No achievements found for AppID {appid}")
+            log_manager.log_error(f"⚠️ No achievements found for AppID {appid}")
             if global_ui:
                 show_custom_dialog(global_ui, "No Achievements", f"AppID {appid} has no achievements")
             return None
@@ -896,7 +997,7 @@ def download_appid_via_steam_api(appid: str, api_key: str) -> Path | None:
 
         html_path = HTML_FOLDER / f"{clean_name}.html"
         html_path.write_text(html_content, encoding="utf-8")
-        print(f"✅ Generated HTML for AppID {appid} ({game_name}) at {html_path}")
+        log_manager.log_message(f"✅ Generated HTML for AppID {appid} ({game_name}) at {html_path}")
 
         if html_path not in all_html_files:
             all_html_files.append(html_path)
@@ -911,7 +1012,7 @@ def download_appid_via_steam_api(appid: str, api_key: str) -> Path | None:
 
     except Exception as e:
         error_msg = str(e)
-        print(f"❌ Steam API error for AppID {appid}: {error_msg}")
+        log_manager.log_error(Exception(f"Steam API error for AppID {appid}: {error_msg}"), "download_appid_via_steam_api")
         if global_ui:
             show_custom_dialog(global_ui, "Steam API Error", f"Failed to fetch data:\n{em}\n\nCheck your API key in Settings.")
         return None
@@ -959,7 +1060,7 @@ def _copy_existing_images(
             try:
                 shutil.copy2(src_path, dest_path)
                 found.add(img_name)
-                print(f"Copied existing image {img_name} from {src_folder}")
+                log_manager.log_message(f"Copied existing image {img_name} from {src_folder}")
             except Exception as e:
                 print(f"Could not copy {img_name}: {e}")
 
@@ -972,14 +1073,14 @@ def move_to_old(html_path: Path):
             dest_html = OLD_HTML_FOLDER / html_path.name
             if html_path.exists():
                 shutil.move(str(html_path), str(dest_html))
-                print(f"🗂️ Moved HTML file to {dest_html}")
+                log_manager.log_message(f"🗂️ Moved HTML file to {dest_html}")
             
             folder_name = html_path.stem + "_files"
             src_folder = html_path.parent / folder_name
             if src_folder.exists():
                 dest_folder = OLD_HTML_FOLDER / folder_name
                 shutil.move(str(src_folder), str(dest_folder))
-                print(f"🗂️ Moved associated folder to {dest_folder}")
+                log_manager.log_message(f"🗂️ Moved associated folder to {dest_folder}")
 
             progress_state = log_manager.load_progress_state()
             progress_state[html_path.name] = {"percent": 100}
@@ -1077,9 +1178,9 @@ def download_images(
                 file_path.write_bytes(resp.content)
                 downloaded_files.add(file_path)
                 downloaded_count += 1
-                print(f"Downloaded {file_path.name} to {dest_folder}")
+                log_manager.log_message(f"Downloaded {file_path.name} to {dest_folder}")
             except Exception as e:
-                print(f"Failed {url}: {e}")
+                log_manager.log_message(f"Failed {url}: {e}")
 
         if progress_cb is not None:
             try:
@@ -1120,7 +1221,7 @@ def main():
     args = parser.parse_args()
 
     if not args.html_path.is_file():
-        print(f"File not found: {args.html_path}")
+        log_manager.log_error(f"File not found: {args.html_path}")
         sys.exit(1)
 
     html_path = args.html_path
@@ -1130,7 +1231,7 @@ def main():
         if old_path.is_file():
             html_path = old_path
         else:
-            print(f"File not found: {args.html_path}")
+            log_manager.log_error(f"File not found: {args.html_path}")
             sys.exit(1)
 
     html_content = log_manager.read_local_file(str(html_path))
@@ -1170,9 +1271,9 @@ def main():
         appid_path = steam_settings / "steam_appid.txt"
         try:
             appid_path.write_text(app_id, encoding="utf-8")
-            print(f"Steam app‑id written to {appid_path}")
+            log_manager.log_message(f"Steam app‑id written to {appid_path}")
         except Exception as e:
-            print(f"Failed to write app‑id file: {e}")
+            log_manager.log_error(f"Failed to write app‑id file: {e}")
 
         game_name = clean_title(soup.find("h1", itemprop="name").text)
         game_dir = GAMES_ROOT / game_name
@@ -1190,13 +1291,13 @@ def main():
             hidden_appid.touch(exist_ok=True)
 
         except Exception as e:
-            print(f"Failed to create hidden app‑id file {hidden_appid}: {e}")
+            log_manager.log_error(f"Failed to create hidden app‑id file {hidden_appid}: {e}")
         try:
             temp_file_path.write_text(temp_content, encoding="utf-8")
         except Exception:
             pass
     else:
-        print("No Steam app‑id found – steam_appid.txt not created.")
+        log_manager.log_error("No Steam app‑id found – steam_appid.txt not created.")
 
     progress_manager.update_progress(30, html_path)
     progress_cb = None
@@ -1207,7 +1308,7 @@ def main():
     )
 
     if not achievement_divs:
-        print("No achievements found in the provided HTML file.")
+        log_manager.log_error("No achievements found in the provided HTML file.")
         sys.exit(0)
 
     for achievement in achievement_divs:
@@ -1265,7 +1366,7 @@ def main():
     hidden_icon_dest = achievement_images / "hidden.jpg"
 
     if not hidden_icon_src.exists():
-        print(f"❌ Critical: Missing required icon at {hidden_icon_src}")
+        log_manager.log_error(f"❌ Critical: Missing required icon at {hidden_icon_src}")
         sys.exit(1)
 
     if any(any(ach[k] == "hidden.jpg" for k in ["icon", "icongray", "icon_gray"]) for ach in achievements):
@@ -1327,7 +1428,7 @@ def main():
     json_path.write_text(
         json.dumps(achievements, indent=4, ensure_ascii=False), encoding="utf-8"
     )
-    print(f"Achievements JSON written to {json_path}")
+    log_manager.log_message(f"Achievements JSON written to {json_path}")
      
     processed_folder = script_dir
     processed = load_processed_log(processed_folder)
@@ -1344,7 +1445,7 @@ def main():
     else:
         already_have = set()
         progress_manager.update_progress(70, html_path)
-        print("No similar folder with images found; will download all needed files.")
+        log_manager.log_error("No similar folder with images found; will download all needed files.")
 
     all_filenames = collect_image_names(soup)
 
@@ -1369,7 +1470,7 @@ def main():
                 achievement_images,
                 progress_cb=progress_cb,
             )
-            print(f"Downloaded {len(missing_filenames)} missing image(s) to {achievement_images}")
+            log_manager.log_message(f"Downloaded {len(missing_filenames)} missing image(s) to {achievement_images}")
             progress_manager.update_progress(90, html_path)
             _download_done[html_path] = True
             missing_filenames = []
@@ -1377,13 +1478,13 @@ def main():
             if progress_cb:
                 progress_cb(1, 1)
     elif app_id:
-        print("All required images already present - no download needed.")
+        log_manager.log_message("All required images already present - no download needed.")
         progress_manager.update_progress(90, html_path)
         progress_cb = progress_manager._get_progress_cb(app_id, html_path) or progress_manager._terminal_progress
         if progress_cb:
             progress_cb(1, 1)
     else:
-        print("No Steam app-id found - image download skipped.")
+        log_manager.log_error("No Steam app-id found - image download skipped.")
         progress_manager.update_progress(90, html_path)
         progress_cb = progress_manager._get_progress_cb(app_id, html_path) or progress_manager._terminal_progress
         if progress_cb:
@@ -1412,7 +1513,7 @@ def main():
             ini_path = steam_settings / "configs.app.ini"
         
             if dlc_txt_path.exists() and ini_path.exists():
-                print("DLC files already exist - skipping DLC processing")
+                log_manager.log_message("DLC files already exist - skipping DLC processing")
             else:
                 dlc_info = OrderedDict()
                 dlc_rows = soup.find_all('tr', attrs={'data-appid': True})
@@ -1439,12 +1540,12 @@ def main():
                         for dlc_id, title in dlc_info.items():
                             f.write(f"{dlc_id}={title}\n")
                     
-                    print(f"DLC.txt and configs.app.ini written in {steam_settings}")
+                    log_manager.log_message(f"DLC.txt and configs.app.ini written in {steam_settings}")
                 else:
-                    print("No DLC entries found, skipping DLC file creation.")
+                    log_manager.log_error("No DLC entries found, skipping DLC file creation.")
             
         except Exception as e:
-            print(f"⚠️ Error during DLC processing: {e}")
+            log_manager.log_error(f"⚠️ Error during DLC processing: {e}")
 
         try:
             depot_rows = soup.find_all('tr', class_='depot')
@@ -1460,12 +1561,12 @@ def main():
                     for depot in sorted(depot_ids, key=int):
                         f.write(f"{depot}\n")
 
-                print(f"depots.txt written in {steam_settings}")
+                log_manager.log_message(f"depots.txt written in {steam_settings}")
             else:
-                print("No Depot entries found, skipping Depot file creation.")
+                log_manager.log_error("No Depot entries found, skipping Depot file creation.")
 
         except Exception as e:
-            print(f"⚠️ Error during depot processing: {e}")
+            log_manager.log_error(f"⚠️ Error during depot processing: {e}")
 
     progress_manager.update_progress(95, html_path)
 
@@ -1481,7 +1582,7 @@ def _wrapped_download(app_id: str, filenames: list[str], dest: Path, cb: callabl
             resp.raise_for_status()
             (dest / fname).write_bytes(resp.content)
         except Exception as e:
-            print(f"Failed {url}: {e}")
+            log_manager.log_error(f"Failed {url}: {e}")
 
         cb(i, len(filenames))
 
@@ -1496,9 +1597,9 @@ def _wrapped_download(app_id: str, filenames: list[str], dest: Path, cb: callabl
     if html_path.parent == HTML_FOLDER:
         try:
             move_to_old(html_path)
-            print(f"🗂️ Moved processed files for {html_path.name} to old_html folder")
+            log_manager.log_message(f"🗂️ Moved processed files for {html_path.name} to old_html folder")
         except Exception as e:
-            print(f"⚠️ Error moving files to old folder: {e}")
+            log_manager.log_error(f"⚠️ Error moving files to old folder: {e}")
 
     state = log_manager.load_progress_state(TEMP_FOLDER)
     state[html_path.name] = {"percent": 100}
@@ -1573,7 +1674,7 @@ def _run_main_in_thread(html_path: Path):
             try:
                 move_to_old(html_path)
             except Exception as e:
-                print(f"Error moving files: {e}")
+                log_manager.log_error(f"Error moving files: {e}")
 
         file_status[html_path] = "done"
         progress_manager.update_progress(100, html_path)
@@ -1599,7 +1700,7 @@ class SettingsManager:
                     self.settings = {**self.default_settings, **stored_data}
                     self._raw_api_key = log_manager.load_decrypted_api_key()
         except Exception as e:
-            print(f"Error loading {self.config_file.name}: {e}")
+            log_manager.log_error(f"Error loading {self.config_file.name}: {e}")
             self.settings = self.default_settings.copy()
     
     def save(self):
@@ -1609,7 +1710,7 @@ class SettingsManager:
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(settings_to_save, f, indent=2)
         except Exception as e:
-            print(f"Error saving {self.config_file.name}: {e}")
+            log_manager.log_error(f"Error saving {self.config_file.name}: {e}")
     
     def get(self, key, default=None):
         if key == "steam_api_key":
@@ -1642,7 +1743,8 @@ GENERAL_SETTINGS = SettingsManager(
         "auto_update": True,
         "mp_prompt": "Ask",
         "hidden_prompt": "Ask",
-        "steam_api_key": ""
+        "steam_api_key": "",
+        "log_settings": {"retention_days": 1}        
     }
 )
 
@@ -2298,7 +2400,7 @@ class DownloadManager:
                     dl_path = temp_extract / asset_name
                     extract_target = temp_extract / clean_name
 
-                print(f"Downloading {asset_name}...")
+                log_manager.log_message(f"Downloading {asset_name}...")
 
                 try:
                     resp = requests.get(asset['browser_download_url'], stream=True, timeout=30)
@@ -2353,10 +2455,10 @@ class DownloadManager:
                     subdir.rmdir()
 
                 dl_path.unlink(missing_ok=True)
-                print(f"Extracted {asset_name} to {extract_target}")
+                log_manager.log_message(f"Extracted {asset_name} to {extract_target}")
 
             self._update_status(version, 'extracting')
-            print(f"Installing files for {self.config['name']} {version}...")
+            log_manager.log_message(f"Installing files for {self.config['name']} {version}...")
 
             version_dir = self._get_version_dir(version)
             if version_dir.exists():
@@ -2364,7 +2466,7 @@ class DownloadManager:
             version_dir.mkdir(parents=True, exist_ok=True)
 
             if self.target == "steamless":
-                self._install_steamless(DOWNLOADS_FOLDER, self._get_version_dir(version))
+                self._install_steamless(temp_extract, self._get_version_dir(version))
             else:
                 self._install_emu(DOWNLOADS_FOLDER, version)
 
@@ -2374,7 +2476,7 @@ class DownloadManager:
                 self._update_status(version, 'error')
                 return
 
-            print(f"Successfully installed {len(installed_files)} files to {version_dir}")
+            log_manager.log_message(f"Successfully installed {len(installed_files)} files to {version_dir}")
             self._clear_temp_folder(temp_extract)
 
             linux_parent = DOWNLOADS_FOLDER / "linux"
@@ -2384,7 +2486,7 @@ class DownloadManager:
                 if d.exists():
                     try:
                         shutil.rmtree(d, ignore_errors=True)
-                        print(f"🗑️ Deleted download folder: {d}")
+                        log_manager.log_message(f"🗑️ Deleted download folder: {d}")
                     except Exception as e:
                         print(f"⚠️ Failed to delete {d}: {e}")
 
@@ -2406,32 +2508,43 @@ class DownloadManager:
             self._install_emu(extract_folder, install_dir.name)
 #----------------------------------------------------------------------------------------------------
     def _install_steamless(self, extract_folder: Path, install_dir: Path):
-        found = {'executable': None, 'config': None, 'plugins': []}
+        plugins_folder = None
+        for root, dirs, files in os.walk(extract_folder):
+            if "Plugins" in dirs:
+                plugins_folder = Path(root) / "Plugins"
+                break
 
-        for root, _, files in os.walk(extract_folder):
-            for file in files:
-                fpath = Path(root) / file
-                if file == "Steamless.CLI.exe":
-                    found['executable'] = fpath
-                elif file == "Steamless.CLI.exe.config":
-                    found['config'] = fpath
-                elif file.endswith('.dll'):
-                    found['plugins'].append(fpath)
+        dest_plugins = install_dir / "Plugins"
+        if dest_plugins.exists():
+            shutil.rmtree(dest_plugins, ignore_errors=True)
+        dest_plugins.mkdir(parents=True, exist_ok=True)
 
-        if found['executable']:
-            shutil.move(str(found['executable']), str(install_dir / "Steamless.CLI.exe"))
-        if found['config']:
-            shutil.move(str(found['config']), str(install_dir / "Steamless.CLI.exe.config"))
-        for dll in found['plugins']:
-            shutil.move(str(dll), str(install_dir / dll.name))
+        if plugins_folder and plugins_folder.exists():
+            for dll_path in plugins_folder.glob("*.dll"):
+                shutil.copy2(dll_path, dest_plugins / dll_path.name)
+                shutil.copy2(dll_path, install_dir / dll_path.name)
+                log_manager.log_message(f"📄 Copied {dll_path.name} to Plugins/ and root of {install_dir}")
 
-        plugins_folder = extract_folder / "Plugins"
-        if plugins_folder.exists():
-            dest_plugins = install_dir / "Plugins"
-            if dest_plugins.exists():
-                shutil.rmtree(dest_plugins, ignore_errors=True)
-            shutil.copytree(plugins_folder, dest_plugins)
-            print(f"📁 Copied Plugins folder to {dest_plugins}")
+            for item in plugins_folder.iterdir():
+                if not item.name.endswith('.dll'):
+                    dest = dest_plugins / item.name
+                    if item.is_dir():
+                        shutil.copytree(item, dest, dirs_exist_ok=True)
+                    else:
+                        shutil.copy2(item, dest)
+
+            log_manager.log_message(f"📁 Plugins folder created at {dest_plugins}")
+
+        for file in extract_folder.rglob("*"):
+            if file.is_file():
+                if file.name == "Steamless.CLI.exe":
+                    dest = install_dir / "Steamless.CLI.exe"
+                    if dest.exists(): dest.unlink()
+                    shutil.move(str(file), str(dest))
+                elif file.name == "Steamless.CLI.exe.config":
+                    dest = install_dir / "Steamless.CLI.exe.config"
+                    if dest.exists(): dest.unlink()
+                    shutil.move(str(file), str(dest))
 
         tracking_file = APP_FOLDER / ".steamless_versions.json"
         try:
@@ -2439,15 +2552,13 @@ class DownloadManager:
             if tracking_file.exists():
                 with open(tracking_file, 'r', encoding='utf-8') as f:
                     tracking_data = json.load(f)
-
             version_name = install_dir.name
             installed_files = [str(p.relative_to(install_dir)) for p in install_dir.rglob("*") if p.is_file()]
             tracking_data[version_name] = installed_files
-
             tracking_file.parent.mkdir(parents=True, exist_ok=True)
             with open(tracking_file, 'w', encoding='utf-8') as f:
                 json.dump(tracking_data, f, indent=2)
-            print(f"📝 Saved Steamless tracking file: {tracking_file}")
+            log_manager.log_message(f"📝 Saved Steamless tracking file: {tracking_file}")
         except Exception as e:
             print(f"⚠️ Failed to save Steamless tracking file: {e}")
 
@@ -2517,7 +2628,7 @@ class DownloadManager:
                                 shutil.copy2(src, dest_file)
                                 src.unlink()
                                 installed_paths.append(str(dest_file))
-                                print(f"✅ Linux x32: {src.name}")
+                                log_manager.log_message(f"✅ Linux x32: {src.name}")
                         break
 
                 for arch_64 in ["x64", "x86_64"]:
@@ -2534,7 +2645,7 @@ class DownloadManager:
                                 shutil.copy2(src, dest_file)
                                 src.unlink()
                                 installed_paths.append(str(dest_file))
-                                print(f"✅ Linux x64: {src.name}")
+                                log_manager.log_message(f"✅ Linux x64: {src.name}")
                         break
 
             if tools_folder:
@@ -2553,7 +2664,7 @@ class DownloadManager:
                                 os.chmod(dest_file, 0o755)
                             except:
                                 pass
-                            print(f"✅ Linux tool: {src.name}")
+                            log_manager.log_message(f"✅ Linux tool: {src.name}")
 
         windows_root = extract_folder / "windows"
         if windows_root.exists():
@@ -2572,7 +2683,7 @@ class DownloadManager:
                         shutil.copy2(src, dest_file)
                         src.unlink()
                         installed_paths.append(str(dest_file))
-                        print(f"✅ Windows client: {src.name}")
+                        log_manager.log_message(f"✅ Windows client: {src.name}")
 
                 extra_src = sc_src / "extra_dlls"
                 if extra_src.exists():
@@ -2587,7 +2698,7 @@ class DownloadManager:
                             shutil.copy2(src, dest_file)
                             src.unlink()
                             installed_paths.append(str(dest_file))
-                            print(f"✅ Windows extra_dll: {src.name}")
+                            log_manager.log_message(f"✅ Windows extra_dll: {src.name}")
 
             if old_src and old_src.exists():
                 src = find_file_in_dir(old_src, "Steam.dll")
@@ -2598,7 +2709,7 @@ class DownloadManager:
                     shutil.copy2(src, dest_file)
                     src.unlink()
                     installed_paths.append(str(dest_file))
-                    print(f"✅ Windows old lib: {src.name}")
+                    log_manager.log_message(f"✅ Windows old lib: {src.name}")
 
             if exp_folder and exp_folder.exists():
                 for arch_32 in ["x86", "x32"]:
@@ -2615,7 +2726,7 @@ class DownloadManager:
                                 shutil.copy2(src, dest_file)
                                 src.unlink()
                                 installed_paths.append(str(dest_file))
-                                print(f"✅ Windows x32: {src.name}")
+                                log_manager.log_message(f"✅ Windows x32: {src.name}")
                         break
 
                 for arch_64 in ["x64", "x86_64"]:
@@ -2632,7 +2743,7 @@ class DownloadManager:
                                 shutil.copy2(src, dest_file)
                                 src.unlink()
                                 installed_paths.append(str(dest_file))
-                                print(f"✅ Windows x64: {src.name}")
+                                log_manager.log_message(f"✅ Windows x64: {src.name}")
                         break
 
             if tools_folder:
@@ -2647,13 +2758,13 @@ class DownloadManager:
                             shutil.copy2(src, dest_file)
                             src.unlink()
                             installed_paths.append(str(dest_file))
-                            print(f"✅ Windows tool: {src.name}")
+                            log_manager.log_message(f"✅ Windows tool: {src.name}")
 
             try:
                 tracking_file.parent.mkdir(parents=True, exist_ok=True)
                 with open(tracking_file, "w", encoding="utf-8") as f:
                     json.dump(installed_paths, f, indent=2)
-                print(f"📝 Saved file: {tracking_file}")
+                log_manager.log_message(f"📝 Saved file: {tracking_file}")
             except Exception as e:
                 print(f"⚠️ Failed to save path file: {e}")
 
@@ -2790,20 +2901,20 @@ class DownloadManager:
             version_dir = self._get_version_dir(version)
             if version_dir.exists():
                 shutil.rmtree(version_dir, ignore_errors=True)
-                print(f"🗑️ Deleted version directory: {version_dir}")
+                log_manager.log_message(f"🗑️ Deleted version directory: {version_dir}")
 
             linux_dl = DOWNLOADS_FOLDER / "linux" / version
             windows_dl = DOWNLOADS_FOLDER / "windows" / version
             for d in [linux_dl, windows_dl]:
                 if d.exists():
                     shutil.rmtree(d, ignore_errors=True)
-                    print(f"🗑️ Deleted download folder: {d}")
+                    log_manager.log_message(f"🗑️ Deleted download folder: {d}")
 
             if "tools_dir" in self.config:
                 tools_dir = self.config["tools_dir"] / version
                 if tools_dir.exists():
                     shutil.rmtree(tools_dir, ignore_errors=True)
-                    print(f"🗑️ Deleted tools folder: {tools_dir}")
+                    log_manager.log_message(f"🗑️ Deleted tools folder: {tools_dir}")
 
             if self.target == "steamless":
                 tracking_file = APP_FOLDER / ".steamless_versions.json"
@@ -2815,7 +2926,7 @@ class DownloadManager:
                             del tracking_data[version]
                             with open(tracking_file, 'w', encoding='utf-8') as f:
                                 json.dump(tracking_data, f, indent=2)
-                            print(f"🗑️ Removed {version} from Steamless tracking")
+                            log_manager.log_message(f"🗑️ Removed {version} from Steamless tracking")
                     except Exception as e:
                         print(f"⚠️ Error updating Steamless tracking: {e}")
 
@@ -2826,7 +2937,7 @@ class DownloadManager:
                 tracking_file = APP_FOLDER / emu / f".{emu}_{version}.json"
                 if tracking_file.exists():
                     tracking_file.unlink()
-                    print(f"🗑️ Deleted tracking file: {tracking_file}")
+                    log_manager.log_message(f"🗑️ Deleted tracking file: {tracking_file}")
                 mark_version_installed(self.target, version, False)
 
             if version in self.download_status:
@@ -3225,7 +3336,7 @@ class WatcherUI(tk.Tk):
 
     def _perform_search(self):
         query = self.search_entry.get().lower()
-        print(f"Searching for: {query}")
+        log_manager.log_message(f"Searching for: {query}")
 
     def _toggle_auto_update(self):
         self.general_settings.set("auto_update", self.auto_update_var.get())
@@ -3246,16 +3357,33 @@ class WatcherUI(tk.Tk):
         try:
             if SAPI_FILE.exists():
                 SAPI_FILE.unlink()
-                print("🗑️ Deleted encrypted API key file")
+                log_manager.log_message("🗑️ Deleted encrypted API key file")
         except Exception as e:
             print(f"⚠️ Error deleting API key file: {e}")
 
         try:
             if DECKEY_FILE.exists():
                 DECKEY_FILE.unlink()
-                print("🗑️ Deleted encryption key file")
+                log_manager.log_message("🗑️ Deleted encryption key file")
         except Exception as e:
             print(f"⚠️ Error deleting encryption key file: {e}")
+
+    def _save_retention_days(self, *args):
+        try:
+            value = int(self.retention_days_var.get() or 1)
+            log_settings = self.general_settings.get("log_settings", {})
+            if not isinstance(log_settings, dict):
+                log_settings = {}
+
+            log_settings["retention_days"] = value
+            self.general_settings.set("log_settings", log_settings)
+        except ValueError:
+            self.retention_days_var.set("1")
+            log_settings = self.general_settings.get("log_settings", {})
+            if not isinstance(log_settings, dict):
+                log_settings = {}
+            log_settings["retention_days"] = 1
+            self.general_settings.set("log_settings", log_settings)
 
     def _populate_download_tab(self, target: str, parent_frame: Frame, theme: dict):
         for widget in parent_frame.winfo_children():
@@ -3648,6 +3776,41 @@ class WatcherUI(tk.Tk):
             fg=theme['fg']
         )
         self.steam_apik_del.pack(side="right", padx=5)
+
+#---------------------------------------------------------------------------------------------------------------------------
+        self.retention_days_var = tk.StringVar(value=str(GENERAL_SETTINGS.get("log_settings", {}).get("retention_days", 1)))
+        self.retention_days_var.trace_add("write", self._save_retention_days)
+        log_settings_label = Label(
+            general_container,
+            text="Log Settings",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 12, "bold")
+        )
+        log_settings_label.pack(pady=(10, 5))
+
+        separator = Frame(general_container, height=2, bg=theme['border'])
+        separator.pack(fill="x", pady=(0, 10))
+
+        retention_frame = Frame(general_container, bg=theme['bg'])
+        retention_frame.pack(fill="x", pady=5)
+
+        retention_label = Label(
+            retention_frame,
+            text="Retention Days:",
+            bg=theme['bg'],
+            fg=theme['fg']
+        )
+        retention_label.pack(side="left", padx=5)
+
+        retention_entry = tk.Entry(
+            retention_frame,
+            width=5,
+            textvariable=self.retention_days_var,
+            bg=theme['widget_bg'],
+            fg=theme['fg']
+        )
+        retention_entry.pack(side="right", padx=5)
 
 #---------------------------------------------------------------------------------------------------------------------------
         self.gbe_tab = Frame(tablist, bg=theme['bg'])
@@ -4918,33 +5081,6 @@ class WatcherUI(tk.Tk):
         if not output_text:
             self.output_text.config(state="disabled")
 
-    def _hide_execution_output(self):
-        if hasattr(self, 'output_frame') and self.output_frame.winfo_exists():
-            self.output_frame.destroy()
-        if hasattr(self, 'output_text'):
-            self.output_text = None
-
-    def _copy_output_to_clipboard(self):
-        if hasattr(self, 'output_text') and self.output_text:
-            output = self.output_text.get("1.0", "end-1c")
-            try:
-                self.clipboard_clear()
-                self.clipboard_append(output)
-                show_custom_dialog(self, "info", "Copied", "Logs copied to clipboard!")
-            except Exception as e:
-                show_custom_dialog(self, "error", "Error", f"Failed to copy logs: {e}")
-
-    def _save_live_output(self):
-        if hasattr(self, 'output_text') and self.output_text:
-            output = self.output_text.get("1.0", "end-1c")
-            log_path = Path.home() / f"steamless_output_{time.strftime('%Y%m%d_%H%M%S')}.log"
-
-            try:
-                log_path.write_text(output, encoding='utf-8')
-                show_custom_dialog(self, "info", "Saved", f"Logs saved to:\n{log_path}")
-            except Exception as e:
-                show_custom_dialog(self, "error", "Error", f"Failed to save logs: {e}")
-
     def _execute_stub_removal(self):
         if not self.stub_removal_selected_files:
             show_custom_dialog(self, "warning","No Files", "No executables selected for stub removal")
@@ -5100,6 +5236,18 @@ class WatcherUI(tk.Tk):
                 return_code = process.wait()
 
                 if return_code == 0:
+                    base_name = str(exe_path)
+                    bak_path = Path(base_name + ".bak")
+                    counter = 1
+                    while bak_path.exists():
+                        bak_path = Path(f"{base_name}.bak{counter}")
+                        counter += 1
+                    exe_path.rename(bak_path)
+
+                    unpacked_path = Path(base_name + ".unpacked.exe")
+                    if unpacked_path.exists():
+                        unpacked_path.rename(exe_path)
+
                     self.output_text.insert("end", f"\n✅ Completed successfully for {exe_path.name}\n")
                 else:
                     self.output_text.insert("end", f"\n⚠️  Failed for {exe_path.name} (Return code: {return_code})\n")
@@ -5114,6 +5262,40 @@ class WatcherUI(tk.Tk):
                 print(f"❌ Error processing {exe_path.name}: {e}")
 
         self.output_text.config(state="disabled")
+
+        for btn_frame in self.output_frame.winfo_children():
+            if isinstance(btn_frame, Frame):
+                for btn in btn_frame.winfo_children():
+                    if isinstance(btn, Button) and "Close" in btn.cget("text"):
+                        btn.pack(side="right", padx=(5, 0))
+                        break
+
+    def _hide_execution_output(self):
+        if hasattr(self, 'output_frame') and self.output_frame.winfo_exists():
+            self.output_frame.destroy()
+        if hasattr(self, 'output_text'):
+            self.output_text = None
+
+    def _copy_output_to_clipboard(self):
+        if hasattr(self, 'output_text') and self.output_text:
+            output = self.output_text.get("1.0", "end-1c")
+            try:
+                self.clipboard_clear()
+                self.clipboard_append(output)
+                show_custom_dialog(self, "info", "Copied", "Logs copied to clipboard!")
+            except Exception as e:
+                show_custom_dialog(self, "error", "Error", f"Failed to copy logs: {e}")
+
+    def _save_live_output(self):
+        if hasattr(self, 'output_text') and self.output_text:
+            output = self.output_text.get("1.0", "end-1c")
+            log_path = Path.home() / f"steamless_output_{time.strftime('%Y%m%d_%H%M%S')}.log"
+
+            try:
+                log_path.write_text(output, encoding='utf-8')
+                show_custom_dialog(self, "info", "Saved", f"Logs saved to:\n{log_path}")
+            except Exception as e:
+                show_custom_dialog(self, "error", "Error", f"Failed to save logs: {e}")
 
     def _on_close(self):
         self._stop_requested = True
@@ -5603,8 +5785,8 @@ class WatcherUI(tk.Tk):
             self.emu_var.set('GBE')
     
     def _console_file_prompt(self):
-        print("--- Console File Selection ---")
-        print("Please enter the full path to your game executable:")
+        log_manager.log_message("--- Console File Selection ---")
+        log_manager.log_message("Please enter the full path to your game executable:")
         while True:
             path = input("File path: ").strip()
             if os.path.exists(path):
@@ -5748,7 +5930,7 @@ class WatcherUI(tk.Tk):
                 check=True
             )
 
-            print(f"Successfully generated interface file for {library_path.name}")
+            log_manager.log_message(f"Successfully generated interface file for {library_path.name}")
             return True
     
         except subprocess.CalledProcessError as e:
@@ -5795,7 +5977,7 @@ class WatcherUI(tk.Tk):
             with open(cold_loader_path, "w") as f:
                 f.writelines(lines)
 
-            print(f"Updated ColdClientLoader.ini with Exe={relative_exe} and AppId={appid}")
+            log_manager.log_message(f"Updated ColdClientLoader.ini with Exe={relative_exe} and AppId={appid}")
 
         except Exception as e:
             print(f"Error updating ColdClientLoader.ini: {e}")
@@ -5945,7 +6127,7 @@ class WatcherUI(tk.Tk):
                                 bak = dst.with_suffix(".dll.bak")
                                 bak.unlink(missing_ok=True)
                                 dst.rename(bak)
-                                print(f"Backed up {dll_name} to {bak.name}")
+                                log_manager.log_message(f"Backed up {dll_name} to {bak.name}")
                             shutil.copy2(src, dst)
                             print(f"Copied {dll_name} to {api_dir} from {src_dir_sel}")
 
@@ -5962,7 +6144,7 @@ class WatcherUI(tk.Tk):
                                     bak = dst.with_suffix(".dll.bak")
                                     bak.unlink(missing_ok=True)
                                     dst.rename(bak)
-                                    print(f"Backed up {dll_name} to {bak.name}")
+                                    log_manager.log_message(f"Backed up {dll_name} to {bak.name}")
                                 shutil.copy2(src, dst)
                                 print(f"Copied {dll_name} to {api_dir} from {src_dir_opp}")
 
@@ -5977,10 +6159,10 @@ class WatcherUI(tk.Tk):
                                 bak_dir.unlink(missing_ok=True)
 
                             dest_steam_settings.rename(bak_dir)
-                            print(f"Backed up existing steam_settings → {bak_dir.name}")
+                            log_manager.log_message(f"Backed up existing steam_settings → {bak_dir.name}")
 
                         shutil.copytree(steam_settings_src, dest_steam_settings, dirs_exist_ok=True)
-                        print(f"Copied whole steam_settings folder to {dest_steam_settings}")
+                        log_manager.log_message(f"Copied whole steam_settings folder to {dest_steam_settings}")
 
                     old_dir = base_dir / "Windows" / "old"
                     steam_dll_src = old_dir / "Steam.dll"
@@ -5989,10 +6171,10 @@ class WatcherUI(tk.Tk):
                     if steam_dll_dest.exists():
                         steam_dll_dest_bak = steam_dll_dest.with_suffix(".bak")
                         steam_dll_dest_bak.replace(steam_dll_dest)
-                        print(f"Renamed existing Steam.dll to Steam.dll.bak in {api_dir}")
+                        log_manager.log_message(f"Renamed existing Steam.dll to Steam.dll.bak in {api_dir}")
 
                         shutil.copy2(steam_dll_src, steam_dll_dest)
-                        print(f"Copied Steam.dll from old folder to {api_dir}")
+                        log_manager.log_message(f"Copied Steam.dll from old folder to {api_dir}")
 
                     loader_suffix = "x64" if arch_value.lower() in ("x86_64", "64") else "x32"
                     client_src = base_dir / "Windows" / "client"
@@ -6035,7 +6217,7 @@ class WatcherUI(tk.Tk):
                             if exe_path and exe_path.exists():
                                 self._update_cold_loader_ini(game_dir, exe_path, appid)
                     except Exception as e:
-                        print(f"Error preparing ColdClientLoader update: {e}")
+                        log_manager.log_message(f"Error preparing ColdClientLoader update: {e}")
 
                     try:
                        gpfile = game_dir / ".gpfile"
@@ -6054,13 +6236,13 @@ class WatcherUI(tk.Tk):
                            game_subfolder = real_game_root / "game"
                            game_subfolder.mkdir(parents=True, exist_ok=True)
 
-                           print(f"Creating game folder at: {game_subfolder}")
+                           log_manager.log_message(f"Creating game folder at: {game_subfolder}")
                            for item in real_game_root.iterdir():
                                if item == game_subfolder:
                                    continue
                                try:
                                    shutil.move(str(item), str(game_subfolder / item.name))
-                                   print(f"Moved {item.name} to {game_subfolder}")
+                                   log_manager.log_message(f"Moved {item.name} to {game_subfolder}")
                                except Exception as e:
                                    print(f"Could not move {item.name}: {e}")
 
@@ -6099,7 +6281,7 @@ class WatcherUI(tk.Tk):
                                    if launcher_path.exists():
                                        launcher_path.unlink()
                                    loader_path.rename(launcher_path)
-                                   print(f"Renamed loader to {launcher_name}")
+                                   log_manager.log_message(f"Renamed loader to {launcher_name}")
                                else:
                                    print(f"Loader already named {launcher_name}")
                            except Exception as e:
@@ -6117,7 +6299,7 @@ class WatcherUI(tk.Tk):
                                try:
                                    dest = real_game_root / src.name
                                    shutil.copy2(str(src), str(dest))
-                                   print(f"Copied {src.name} to {real_game_root}")
+                                   log_manager.log_message(f"Copied {src.name} to {real_game_root}")
                                except Exception as e:
                                    print(f"Could not copy {src.name} to {real_game_root}: {e}")
 
@@ -6138,7 +6320,7 @@ class WatcherUI(tk.Tk):
                             if bak_path.exists():
                                 bak_path.unlink()
                             file_path.rename(bak_path)
-                            print(f"Backed up {file_name} to {bak_path.name}")
+                            log_manager.log_message(f"Backed up {file_name} to {bak_path.name}")
 
                     if dest_steam_settings.exists():
                         bak_dir = dest_steam_settings.with_name(dest_steam_settings.name + ".bak")
@@ -6149,18 +6331,18 @@ class WatcherUI(tk.Tk):
                             bak_dir.unlink(missing_ok=True)
 
                         dest_steam_settings.rename(bak_dir)
-                        print(f"Backed up existing steam_settings → {bak_dir.name}")
+                        log_manager.log_message(f"Backed up existing steam_settings → {bak_dir.name}")
 
                     if steam_settings_src.is_dir():
                         shutil.copytree(steam_settings_src, dest_steam_settings, dirs_exist_ok=True)
-                        print(f"Copied whole steam_settings folder to {dest_steam_settings}")
+                        log_manager.log_message(f"Copied whole steam_settings folder to {dest_steam_settings}")
 
                     src_dir = base_dir / "Linux" / arch_dir
                     for item in src_dir.iterdir():
                         if item.is_file() and not item.name.endswith('.bak'):
                             dest = lib_dir / item.name
                             shutil.copy2(item, dest)
-                            print(f"Copied {item.name} to {lib_dir}")
+                            log_manager.log_message(f"Copied {item.name} to {lib_dir}")
 
                 if platform in ["Windows", "Linux"]:
                     if self.winfo_exists():
@@ -6210,7 +6392,7 @@ class WatcherUI(tk.Tk):
         content = "\n".join([f"{key}={value}" for key, value in data.items()])
         try:
             gpfile.write_text(content, encoding="utf-8")
-            print(f"Updated .gpfile at {gpfile}")
+            log_manager.log_message(f"Updated .gpfile at {gpfile}")
         except Exception as e:
             print(f"Error writing .gpfile: {e}")
             raise
@@ -6396,7 +6578,7 @@ class WatcherUI(tk.Tk):
             if html_folder_path.is_dir():
                 try:
                     shutil.rmtree(html_folder_path, ignore_errors=True)
-                    print(f"🗑️  Deleted HTML folder {html_folder_path}")
+                    log_manager.log_message(f"🗑️  Deleted HTML folder {html_folder_path}")
                 except Exception as e:
                     print(f"⚠️  Could not delete HTML folder {html_folder_path}: {e}")
 
@@ -6405,7 +6587,7 @@ class WatcherUI(tk.Tk):
             if html_file_path.is_file():
                 try:
                     html_file_path.unlink(missing_ok=True)
-                    print(f"🗑️  Deleted HTML file {html_file_path}")
+                    log_manager.log_message(f"🗑️  Deleted HTML file {html_file_path}")
                 except Exception as e:
                     print(f"⚠️  Could not delete HTML file {html_file_path}: {e}")
 
@@ -6418,14 +6600,14 @@ class WatcherUI(tk.Tk):
             if hidden_path.is_file():
                 try:
                     shutil.rmtree(game_dir, ignore_errors=True)
-                    print(f"🗑️  Deleted game folder {game_dir} (found hidden .{temp_data['appid']})")
+                    log_manager.log_message(f"🗑️  Deleted game folder {game_dir} (found hidden .{temp_data['appid']})")
                 except Exception as e:
                     print(f"⚠️  Could not delete game folder {game_dir}: {e}")
             else:
                 if not appid_file.is_file():
                     try:
                         shutil.rmtree(game_dir, ignore_errors=True)
-                        print(f"🗑️  Deleted game folder {game_dir} (steam_appid.txt missing)")
+                        log_manager.log_message(f"🗑️  Deleted game folder {game_dir} (steam_appid.txt missing)")
                     except Exception as e:
                         print(f"⚠️  Could not delete game folder {game_dir}: {e}")
                 else:
@@ -6438,15 +6620,13 @@ class WatcherUI(tk.Tk):
                     if stored_appid == temp_data["appid"]:
                         try:
                             shutil.rmtree(game_dir, ignore_errors=True)
-                            print(f"🗑️  Deleted game folder {game_dir} (appid match)")
+                            log_manager.log_message(f"🗑️  Deleted game folder {game_dir} (appid match)")
                         except Exception as e:
                             print(f"⚠️  Could not delete game folder {game_dir}: {e}")
                     else:
                         try:
                             shutil.rmtree(game_dir, ignore_errors=True)
-                            print(
-                                f"🗑️  Deleted game folder {game_dir} (fallback to GAMEDIR from temp file)"
-                            )
+                            log_manager.log_message(f"🗑️  Deleted game folder {game_dir} (fallback to GAMEDIR from temp file)")
                         except Exception as e:
                             print(f"⚠️  Could not delete game folder {game_dir}: {e}")
 
@@ -6458,7 +6638,7 @@ class WatcherUI(tk.Tk):
                     del prog_data[html_path.name]
                     with prog_path.open("w", encoding="utf-8") as f:
                         json.dump(prog_data, f, indent=2, ensure_ascii=False)
-                    print(f"🗑️  Removed {html_path.name} from progress.json")
+                    log_manager.log_message(f"🗑️  Removed {html_path.name} from progress.json")
         except Exception as e:
             print(f"⚠️  Could not update progress.json: {e}")
 
@@ -6496,7 +6676,7 @@ class WatcherUI(tk.Tk):
         try:
             if temp_txt.is_file():
                 temp_txt.unlink(missing_ok=True)
-                print(f"🗑️  Deleted temporary file {temp_txt}")
+                log_manager.log_message(f"🗑️  Deleted temporary file {temp_txt}")
         except Exception as e:
             print(f"⚠️  Could not delete temporary file {temp_txt}: {e}")
 
@@ -6530,6 +6710,7 @@ class WatcherUI(tk.Tk):
         return self._stop_requested
 
 global_ui = None
+log_manager.set_ui(global_ui)
 
 # ------------------------------------------------------------
 def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Event):
@@ -6558,7 +6739,7 @@ def _watch_worker(folder: Path, file_queue: queue.Queue, stop_flag: threading.Ev
 
         if new_files:
             removed_files = log_manager.load_removed_files()
-            print(f"Detected new HTML files: {new_files}")
+            log_manager.log_message(f"Detected new HTML files: {new_files}")
             for new_html in sorted(new_files):
                 if new_html.name in removed_files:
                     if _gui_yes_no("You are about to download a game you removed. Would you like to continue?"):
