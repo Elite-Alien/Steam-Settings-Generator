@@ -1,0 +1,11 @@
+{
+  "bg": "#878787",
+  "fg": "#cdcdcd",
+  "widget_bg": "#4D4A45",
+  "widget_fg": "#878787",
+  "hover_bg": "#000000",
+  "active_bg": "#4D4A45",
+  "border": "#7D6D6D",
+  "button_bg": "#473E3E",
+  "progress": "#70A646"
+}
