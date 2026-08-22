@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import os, sys, re, json, argparse, difflib, pathlib, requests, shutil, subprocess, threading, queue, time, webbrowser, zipfile, bcrypt, base64, ctypes
 from collections import defaultdict
-from tkinter import Canvas, Scrollbar, Frame, Label, ttk, Checkbutton, Button, Entry, filedialog, messagebox
+from tkinter import Canvas, Scrollbar, Frame, Label, ttk, Checkbutton, Button, Entry, Radiobutton, filedialog, messagebox
 from pathlib import Path
 from collections import OrderedDict
 from urllib.parse import urljoin
@@ -309,6 +309,10 @@ APP_URL_TEMPLATE = "https://shared.fastly.steamstatic.com/community_assets/image
 APP_FOLDER = pathlib.Path(__file__).resolve().parent / ".app"
 APP_FOLDER.mkdir(parents=True, exist_ok=True)
 #-------------------------------------------------------------
+THEMES_FOLDER = APP_FOLDER / "themes"
+THEMES_FOLDER.mkdir(parents=True, exist_ok=True)
+SELECTED_CTHEME_FILE = APP_FOLDER / "selected_ctheme.json"
+#-------------------------------------------------------------
 VERSION_FILE = APP_FOLDER / "version.txt"
 UPDATE_CHECK_FILE = APP_FOLDER / "update_check.json"
 GBE_VERSION_FILE = APP_FOLDER / "gbe.txt"
@@ -341,8 +345,10 @@ DOWNLOADS_FOLDER = APP_FOLDER / "downloads"
 DOWNLOADS_FOLDER.mkdir(parents=True, exist_ok=True)
 TEMP_FOLDER = APP_FOLDER / "temp"
 TEMP_FOLDER.mkdir(parents=True, exist_ok=True)
+#-------------------------------------------------------------
 EXTRA_FOLDER = pathlib.Path(__file__).resolve().parent / "Extra"
 EXTRA_FOLDER.mkdir(parents=True, exist_ok=True)
+#-------------------------------------------------------------
 PROGRESS_STATE_FILE = APP_FOLDER / "progress.json"
 REMOVED_FILES_FILE = APP_FOLDER / "removed_files.json"
 HTML_FOLDER = pathlib.Path(__file__).resolve().parent / "HTML"
@@ -351,12 +357,14 @@ GAMES_ROOT = pathlib.Path(__file__).resolve().parent / "Games"
 GAMES_ROOT.mkdir(parents=True, exist_ok=True)
 OLD_HTML_FOLDER = TEMP_FOLDER / "old_html"
 OLD_HTML_FOLDER.mkdir(parents=True, exist_ok=True)
+#-------------------------------------------------------------
 TOOLS_FOLDER = APP_FOLDER / "tools"
 TOOLS_FOLDER.mkdir(parents=True, exist_ok=True)
 GBE_TOOLS_FOLDER = TOOLS_FOLDER / "gbe_tools"
 GBE_TOOLS_FOLDER.mkdir(parents=True, exist_ok=True)
 GSE_TOOLS_FOLDER = TOOLS_FOLDER / "gse_tools"
 GSE_TOOLS_FOLDER.mkdir(parents=True, exist_ok=True)
+#-------------------------------------------------------------
 USER_CONFIG_FILE = APP_FOLDER / "userconfig.json"
 GENERAL_SETTINGS_FILE = APP_FOLDER / "general_settings.json"
 CRYPT_FOLDER = APP_FOLDER / ".crypt"
@@ -817,6 +825,85 @@ def check_for_updates(manual=False, target='app'):
 def restart_application():
     python = sys.executable
     os.execl(python, python, *sys.argv)
+
+# Helper function to load custom themes from the themes folder
+def load_custom_themes() -> dict:
+    themes = {}
+    if not THEMES_FOLDER.exists():
+        return themes
+    for theme_file in THEMES_FOLDER.glob("*.json"):
+        try:
+            with open(theme_file, "r", encoding="utf-8") as f:
+                theme_data = json.load(f)
+                theme_name = theme_file.stem
+                themes[theme_name] = theme_data
+        except Exception as e:
+            log_manager.log_error(f"Failed to load theme {theme_file.name}: {e}")
+    return themes
+
+# Helper function to save a custom theme
+def save_custom_theme(theme_name: str, theme_data: dict) -> bool:
+    try:
+        THEMES_FOLDER.mkdir(parents=True, exist_ok=True)
+        theme_path = THEMES_FOLDER / f"{theme_name}.json"
+        with open(theme_path, "w", encoding="utf-8") as f:
+            json.dump(theme_data, f, indent=4, ensure_ascii=False)
+        return True
+    except Exception as e:
+        log_manager.log_error(f"Failed to save theme {theme_name}: {e}")
+        return False
+
+# Helper function to load the selected custom theme
+def load_selected_ctheme() -> str | None:
+    if not SELECTED_CTHEME_FILE.exists():
+        return None
+    try:
+        with open(SELECTED_CTHEME_FILE, "r", encoding="utf-8") as f:
+            return json.load(f).get("theme_name")
+    except Exception as e:
+        log_manager.log_error(f"Failed to load selected custom theme: {e}")
+        return None
+
+# Helper function to save the selected custom theme
+def save_selected_ctheme(theme_name: str) -> bool:
+    try:
+        SELECTED_CTHEME_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(SELECTED_CTHEME_FILE, "w", encoding="utf-8") as f:
+            json.dump({"theme_name": theme_name}, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        log_manager.log_error(f"Failed to save selected custom theme: {e}")
+        return False
+
+# Helper function to auto-format color codes (add # if missing)
+def format_color_code(color: str) -> str:
+    color = color.strip()
+    if not color:
+        return color
+    if color.startswith("#"):
+        return color
+    # Check if it's a valid hex color (3 or 6 digits)
+    if re.fullmatch(r"^[0-9a-fA-F]{3,6}$", color):
+        return f"#{color}"
+    return color
+
+def validate_selected_ctheme() -> str | None:
+    selected_theme_name = load_selected_ctheme()
+    if not selected_theme_name:
+        return None
+
+    custom_themes = load_custom_themes()
+    if selected_theme_name not in custom_themes:
+
+        try:
+            if SELECTED_CTHEME_FILE.exists():
+                SELECTED_CTHEME_FILE.unlink()
+            log_manager.log_message(f"⚠️  Selected custom theme '{selected_theme_name}' not found. Resetting to default.")
+        except Exception as e:
+            log_manager.log_error(e, "validate_selected_ctheme")
+        return None
+
+    return selected_theme_name
 
 def generate_key() -> bytes:
     return Fernet.generate_key()
@@ -1749,6 +1836,348 @@ GENERAL_SETTINGS = SettingsManager(
 )
 
 # ------------------------------------------------------------
+class ThemeConfigTab:
+    def __init__(self, parent_frame, theme, ui_instance):
+        self.parent = parent_frame
+        self.ui = ui_instance
+        self.theme = theme
+        if hasattr(self.ui, 'dark_mode'):
+            self.current_theme = self.ui.DARK_THEME if self.ui.dark_mode else self.ui.LIGHT_THEME
+        else:
+            self.current_theme = self.ui.DARK_THEME
+        self.custom_themes_enabled = tk.BooleanVar(
+            value=GENERAL_SETTINGS.get("custom_themes_enabled", False)
+        )
+        self.selected_theme = tk.StringVar()
+        self.theme_fields = {}
+        self.custom_theme_name = tk.StringVar()
+        self.theme_listbox = None
+        self.custom_theme_data = {}
+
+        # Default theme fields (from DARK_THEME)
+        self.default_theme_fields = {
+            "bg": "#2d2d2d",
+            "fg": "#cdcdcd",
+            "widget_bg": "#404040",
+            "widget_fg": "#ffffff",
+            "hover_bg": "#505050",
+            "active_bg": "#606060",
+            "border": "#606060",
+            "button_bg": "#404040",
+            "progress": "darkred"
+        }
+
+        self._setup_ui()
+
+    def _setup_ui(self):
+        default_theme_frame = Frame(self.parent, bg=self.theme["widget_bg"])
+        default_theme_frame.pack(fill="x", pady=5)
+
+        default_theme_label = Label(
+            default_theme_frame,
+            text="Default Theme:",
+            bg=self.theme["widget_bg"],
+            fg=self.theme["widget_fg"],
+        )
+        default_theme_label.pack(side="left", padx=5)
+
+        # Default theme variable
+        self.default_theme_var = tk.StringVar(value=GENERAL_SETTINGS.get("default_theme", "dark"))
+
+        dark_rb = Radiobutton(
+            default_theme_frame,
+            text="Dark",
+            variable=self.default_theme_var,
+            value="dark",
+            command=self._save_default_theme,
+            bg=self.theme["widget_bg"],
+            fg=self.theme["widget_fg"],
+            selectcolor=self.theme["widget_bg"],
+        )
+        dark_rb.pack(side="left", padx=5)
+
+        light_rb = Radiobutton(
+            default_theme_frame,
+            text="Light",
+            variable=self.default_theme_var,
+            value="light",
+            command=self._save_default_theme,
+            bg=self.theme["widget_bg"],
+            fg=self.theme["widget_fg"],
+            selectcolor=self.theme["widget_bg"],
+        )
+        light_rb.pack(side="left", padx=5)
+
+        self.custom_rb = Radiobutton(
+            default_theme_frame,
+            text="Custom",
+            variable=self.default_theme_var,
+            value="custom",
+            command=self._save_default_theme,
+            bg=self.theme["widget_bg"],
+            fg=self.theme["widget_fg"],
+            selectcolor=self.theme["widget_bg"],
+            state="disabled",
+        )
+        self.custom_rb.pack(side="left", padx=5)
+
+        # Enable/disable Custom radio based on custom themes enabled
+        self.custom_themes_enabled.trace_add("write", self._update_custom_rb_state)
+        self._update_custom_rb_state()
+
+        enable_cb = Checkbutton(
+            default_theme_frame,
+            text="Enable Custom Themes",
+            variable=self.custom_themes_enabled,
+            command=self._toggle_custom_themes,
+            bg=self.theme["widget_bg"],
+            fg=self.theme["widget_fg"],
+            selectcolor=self.theme["widget_bg"],
+            activebackground=self.theme["widget_bg"],
+            activeforeground=self.theme["widget_fg"],
+        )
+        enable_cb.pack(side="right", padx=5)
+
+        # Theme Selection Frame (Scrollable)
+        selection_frame = Frame(self.parent, bg=self.theme["widget_bg"])
+        selection_frame.pack(fill="both", expand=True, pady=5)
+
+        selection_label = Label(
+            selection_frame,
+            text="Select a Custom Theme:",
+            bg=self.theme["widget_bg"],
+            fg=self.theme["widget_fg"],
+        )
+        selection_label.pack(anchor="w", padx=5)
+
+        # Canvas and Scrollbar for Theme List
+        canvas = Canvas(selection_frame, bg=self.theme["widget_bg"], highlightthickness=0, height=60)
+        scrollbar = Scrollbar(selection_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = Frame(canvas, bg=self.theme["widget_bg"])
+
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        self.theme_listbox_frame = scrollable_frame
+
+        # Theme Creation Frame
+        creation_frame = Frame(self.parent, bg=self.theme["widget_bg"])
+        creation_frame.pack(fill="x", pady=5)
+
+        creation_label = Label(
+            creation_frame,
+            text="Create a Custom Theme:",
+            bg=self.theme["widget_bg"],
+            fg=self.theme["widget_fg"],
+        )
+        creation_label.pack(anchor="w", padx=5)
+
+        # Name Field
+        name_frame = Frame(creation_frame, bg=self.theme["widget_bg"])
+        name_frame.pack(fill="x", pady=2)
+
+        name_label = Label(
+            name_frame,
+            text="Name:",
+            bg=self.theme["widget_bg"],
+            fg=self.theme["widget_fg"],
+        )
+        name_label.pack(side="left", padx=5)
+
+        name_entry = Entry(
+            name_frame,
+            textvariable=self.custom_theme_name,
+            bg=self.theme["widget_bg"],
+            fg=self.theme["widget_fg"],
+            insertbackground=self.theme["fg"],
+        )
+        name_entry.pack(side="left", fill="x", expand=True, padx=5)
+
+        # Color Fields
+        for field, default_value in self.default_theme_fields.items():
+            field_frame = Frame(creation_frame, bg=self.theme["widget_bg"])
+            field_frame.pack(fill="x", pady=2)
+
+            field_label = Label(
+                field_frame,
+                text=f"{field}:",
+                bg=self.theme["widget_bg"],
+                fg=self.theme["widget_fg"],
+                width=12,
+                anchor="w",
+            )
+            field_label.pack(side="left", padx=5)
+
+            field_entry = Entry(
+                field_frame,
+                bg=self.theme["widget_bg"],
+                fg=self.theme["widget_fg"],
+                insertbackground=self.theme["fg"],
+            )
+            field_entry.insert(0, default_value)
+            field_entry.bind("<KeyRelease>", lambda e, f=field: self._update_theme_preview(f))
+            field_entry.pack(side="left", fill="x", expand=True, padx=5)
+
+            self.theme_fields[field] = field_entry
+
+        # Save Button
+        save_button = Button(
+            creation_frame,
+            text="Save Theme",
+            command=self._save_custom_theme,
+            bg=self.theme["button_bg"],
+            fg=self.theme["widget_fg"],
+        )
+        save_button.pack(pady=10)
+
+        # Load themes and refresh the list
+        self._refresh_theme_list()
+
+        # Load selected custom theme
+        selected_theme = load_selected_ctheme()
+        if selected_theme:
+            self.selected_theme.set(selected_theme)
+            self._highlight_selected_theme()
+
+    def _update_custom_rb_state(self, *args):
+        if self.custom_themes_enabled.get():
+            self.custom_rb.config(state="normal")
+        else:
+            self.custom_rb.config(state="disabled")
+            if self.default_theme_var.get() == "custom":
+                self.default_theme_var.set("dark")
+                self._save_default_theme()
+
+    def _save_default_theme(self):
+        GENERAL_SETTINGS.set("default_theme", self.default_theme_var.get())
+
+    def _toggle_custom_themes(self):
+        GENERAL_SETTINGS.set("custom_themes_enabled", self.custom_themes_enabled.get())
+
+    def _refresh_theme_list(self):
+        for widget in self.theme_listbox_frame.winfo_children():
+            widget.destroy()
+
+        custom_themes = load_custom_themes()
+        if not custom_themes:
+            no_themes_label = Label(
+                self.theme_listbox_frame,
+                text="No custom themes found.",
+                bg=self.theme["widget_bg"],
+                fg=self.theme["widget_fg"],
+            )
+            no_themes_label.pack(anchor="w", padx=5)
+            return
+
+        for theme_name in custom_themes:
+            theme_frame = Frame(self.theme_listbox_frame, bg=self.theme["widget_bg"])
+            theme_frame.pack(fill="x", pady=2)
+
+            theme_radio = Radiobutton(
+                theme_frame,
+                variable=self.selected_theme,
+                value=theme_name,
+                command=lambda tn=theme_name: self._select_theme(tn),
+                bg=self.theme["widget_bg"],
+                fg=self.theme["widget_fg"],
+                selectcolor=self.theme["widget_bg"],
+                activebackground=self.theme["widget_bg"],
+                activeforeground=self.theme["widget_fg"],
+            )
+            theme_radio.pack(side="left", padx=5)
+
+            theme_label = Label(
+                theme_frame,
+                text=theme_name,
+                bg=self.theme["widget_bg"],
+                fg=self.theme["widget_fg"],
+            )
+            theme_label.pack(side="left", padx=5)
+
+        # Highlight the selected theme
+        self._highlight_selected_theme()
+
+    def _highlight_selected_theme(self):
+        selected = self.selected_theme.get()
+        if not selected:
+            return
+
+        for widget in self.theme_listbox_frame.winfo_children():
+            if isinstance(widget, Frame):
+                for child in widget.winfo_children():
+                    if isinstance(child, Radiobutton) and child.cget("value") == selected:
+                        child.select()
+
+    def _select_theme(self, theme_name: str):
+        self.selected_theme.set(theme_name)
+        save_selected_ctheme(theme_name)
+        self._apply_selected_theme()
+
+    def _apply_selected_theme(self):
+        # Validate the theme exists before applying
+        selected_theme_name = validate_selected_ctheme()
+        if not selected_theme_name:
+            return
+
+        custom_themes = load_custom_themes()
+        if selected_theme_name not in custom_themes:
+            return
+
+        self.ui.custom_theme = custom_themes[selected_theme_name]
+        self.ui._apply_theme()
+
+    def _update_theme_preview(self, field: str):
+        if not self.custom_themes_enabled.get():
+            return
+
+        # Real-time Preview
+        new_color = self.theme_fields[field].get()
+        new_color = format_color_code(new_color)
+
+        # Apply the color to the UI for live preview
+        preview_theme = self._get_current_theme_data()
+        self.ui.custom_theme = preview_theme
+        self.ui._apply_theme()  # Use theme logic
+
+    def _get_current_theme_data(self) -> dict:
+        theme_data = {}
+        for field, entry in self.theme_fields.items():
+            color = entry.get()
+            theme_data[field] = format_color_code(color)
+        return theme_data
+
+    def _save_custom_theme(self):
+        theme_name = self.custom_theme_name.get().strip()
+        if not theme_name:
+            show_custom_dialog(self.parent, "error", "Error", "Please enter a theme name.")
+            return
+
+        # Replace spaces with underscores
+        theme_name = theme_name.replace(" ", "_")
+
+        # Check for empty fields
+        for field, entry in self.theme_fields.items():
+            if not entry.get().strip():
+                show_custom_dialog(self.parent, "error", "Error", f"Please fill in the {field} field.")
+                return
+
+        # Get theme data
+        theme_data = self._get_current_theme_data()
+
+        # Save the theme
+        if save_custom_theme(theme_name, theme_data):
+            self._refresh_theme_list()
+            self.custom_theme_name.set("")
+            show_custom_dialog(self.parent, "info", "Success", f"Theme '{theme_name}' saved successfully!")
+        else:
+            show_custom_dialog(self.parent, "error", "Error", "Failed to save the theme.")
+
+# ------------------------------------------------------------
 import os
 import subprocess
 from urllib.parse import unquote, urlparse
@@ -1768,6 +2197,7 @@ class DropZoneHelper:
         self.parent = parent_widget
         self.on_files_callback = on_files_callback
         self.theme = theme
+        self.use_custom_theme = False
         self.allowed_extensions = [ext.lower() for ext in (allowed_extensions or [])]
         self.initial_text = initial_text
         self.drop_label = None
@@ -3176,10 +3606,24 @@ class WatcherUI(tk.Tk):
         'progress': 'lightgreen'
     }
 
-    def toggle_theme(self):
-        self.dark_mode = not self.dark_mode
-        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+    def apply_custom_theme(self, theme_data: dict):
+        self.custom_theme = theme_data
+        self._apply_theme()
 
+    def _apply_theme(self):
+        # Determine which theme to use
+        if hasattr(self, "custom_theme") and self.custom_theme:
+            theme = self.custom_theme
+        else:
+            theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+
+        # Update theme button text
+        if hasattr(self, "custom_theme") and self.custom_theme:
+            self.theme_btn.config(text="🎨")
+        else:
+            self.theme_btn.config(text='🌞' if self.dark_mode else '🌚')
+
+        # Apply theme to all UI elements
         self.top_bar.config(bg=theme['bg'])
         self.control_bar.config(bg=theme['bg'])
         self.right_button_frame.config(bg=theme['bg'])
@@ -3188,11 +3632,9 @@ class WatcherUI(tk.Tk):
         self.mass_close_btn.config(bg=theme['button_bg'], fg=theme['fg'])
         self.settings_btn.config(bg=theme['button_bg'], fg=theme['fg'])
         self.log_btn.config(bg=theme['button_bg'], fg=theme['fg'])
-        self.theme_btn.config(text='🌚' if self.dark_mode else '🌞')
 
         self.style.configure('TNotebook', background=theme['bg'])
         self.style.configure('TNotebook.Tab', background=theme['widget_bg'], foreground=theme['fg'], lightcolor=theme['border'], borderwidth=0)
-        self.style.configure('TNotebook.Tab', background=theme['widget_bg'], foreground=theme['fg'], lightcolor=theme['border'])
         self.style.map('TNotebook.Tab', background=[('selected', theme['widget_bg'])], foreground=[('selected', theme['fg'])])
         self.style.configure('TCombobox', fieldbackground=theme['widget_bg'], background=theme['widget_bg'], foreground=theme['fg'])
         self.style.map('TCombobox', fieldbackground=[('readonly', theme['widget_bg'])], selectbackground=[('readonly', theme['widget_bg'])], selectforeground=[('readonly', theme['fg'])], arrowcolor=[('readonly', theme['fg'])])
@@ -3211,27 +3653,15 @@ class WatcherUI(tk.Tk):
             try:
                 if isinstance(widget, (Frame, Canvas)):
                     widget.config(bg=theme['bg'])
-                elif isinstance(widget, (Label, Checkbutton)):
+                elif isinstance(widget, Label):
                     widget.config(bg=theme['bg'], fg=theme['fg'])
                 elif isinstance(widget, Entry):
-                    widget.config(
-                        bg=theme['widget_bg'],
-                        fg=theme['fg'],
-                        insertbackground=theme['fg']
-                    )
+                    widget.config(bg=theme['widget_bg'], fg=theme['fg'], insertbackground=theme['fg'])
                 elif isinstance(widget, Checkbutton):
-                    widget.config(
-                        bg=theme['bg'],
-                        fg=theme['fg'],
-                        activebackground=theme['bg'],
-                        activeforeground=theme['fg'],
-                        selectcolor=theme['widget_bg']
-                    )
-            
-                if isinstance(widget, ttk.Combobox):
+                    widget.config(bg=theme['bg'], fg=theme['fg'], activebackground=theme['bg'], activeforeground=theme['fg'], selectcolor=theme['widget_bg'])
+                elif isinstance(widget, ttk.Combobox):
                     widget.config(style='TCombobox')
-
-            except Exception as e:
+            except Exception:
                 pass
 
             for child in widget.winfo_children():
@@ -3252,11 +3682,7 @@ class WatcherUI(tk.Tk):
         self.scrollbar.config(bg=theme['widget_bg'], troughcolor=theme['bg'])
 
         for btn in [self.mass_close_btn, self.settings_btn, self.theme_btn]:
-            btn.config(
-                bg=theme['button_bg'],
-                fg=theme['fg'],
-                activebackground=theme['active_bg']
-            )
+            btn.config(bg=theme['button_bg'], fg=theme['fg'], activebackground=theme['active_bg'])
 
         self.style.configure(f'{theme["progress"]}.Horizontal.TProgressbar', background=theme['progress'], troughcolor=theme['widget_bg'])
 
@@ -3272,67 +3698,45 @@ class WatcherUI(tk.Tk):
                 widgets['close_btn'].config(bg=theme['button_bg'], fg=theme['fg'])
                 widgets['progress'].configure(style=f'{theme["progress"]}.Horizontal.TProgressbar')
 
-        self.settings_frame.config(height=500, bg=theme['bg'])
-        self.settings_frame.pack_propagate(False)
+    def toggle_theme(self):
+        # Check if custom themes are enabled and we have a valid theme
+        custom_themes_enabled = GENERAL_SETTINGS.get("custom_themes_enabled", False)
+        selected_theme_name = validate_selected_ctheme()
+        custom_theme_exists = selected_theme_name is not None
 
-        self.configure(bg=theme['bg'])
-        self.counter_label.config(bg=theme['bg'], fg=theme['fg'])
-        self.list_frame.config(bg=theme['bg'])
-        self.canvas.config(bg=theme['bg'])
-        self.inner_frame.config(bg=theme['bg'])
-        self.scrollbar.config(
-            bg=theme['widget_bg'],
-            troughcolor=theme['bg']
-        )
-        
-        self.theme_btn.config(
-            text='🌞' if self.dark_mode else '🌚',
-            bg=theme['button_bg'],
-            fg=theme['fg']
-        )
-        
-        self.mass_close_btn.config(
-            bg=theme['button_bg'],
-            fg=theme['fg']
-        )
+        can_use_custom = custom_themes_enabled and custom_theme_exists
 
-        for path, widgets in self._row_widgets.items():
-            if widgets['frame'].winfo_exists():
-                widgets['frame'].config(
-                    bg=theme['widget_bg'], 
-                    highlightbackground=theme['border']
-                )
-            if widgets['top_frame'].winfo_exists():
-                widgets['top_frame'].config(bg=theme['widget_bg'])
-            if widgets['bottom_frame'].winfo_exists():
-                widgets['bottom_frame'].config(bg=theme['widget_bg'])
-            if widgets['progress'].winfo_exists():
-                widgets['progress'].configure(style=f'{theme["progress"]}.Horizontal.TProgressbar')
-            if widgets['percent'].winfo_exists():
-                widgets['percent'].config(
-                    bg=theme['widget_bg'],
-                    fg=theme['fg']
-                )
-            if widgets['name_label'].winfo_exists():
-                widgets['name_label'].config(
-                    bg=theme['widget_bg'],
-                    fg=theme['fg']
-                )
-            if widgets['path_label'].winfo_exists():
-                widgets['path_label'].config(
-                    bg=theme['button_bg'],
-                    fg=theme['fg']
-                )
-            if widgets['attention_btn'].winfo_exists():
-                widgets['attention_btn'].config(
-                    bg=theme['button_bg'],
-                    fg=theme['fg']
-                )
-            if widgets['close_btn'].winfo_exists():
-                widgets['close_btn'].config(
-                    bg=theme['button_bg'],
-                    fg=theme['fg']
-                )
+        # Determine current theme state
+        if hasattr(self, "custom_theme") and self.custom_theme:
+            current_theme = "custom"
+        else:
+            current_theme = "dark" if self.dark_mode else "light"
+
+        # Determine next theme in cycle
+        if can_use_custom:
+            # Cycle: dark -> light -> custom -> dark
+            if current_theme == "dark":
+                next_theme = "light"
+            elif current_theme == "light":
+                next_theme = "custom"
+            else:  # current_theme == "custom"
+                next_theme = "dark"
+        else:
+            # Only dark/light available
+            next_theme = "light" if current_theme == "dark" else "dark"
+
+        # Apply the next theme
+        if next_theme == "custom":
+            custom_themes = load_custom_themes()
+            self.custom_theme = custom_themes[selected_theme_name]
+        elif next_theme == "dark":
+            self.custom_theme = None
+            self.dark_mode = True
+        else:  # light
+            self.custom_theme = None
+            self.dark_mode = False
+
+        self._apply_theme()
 
     def _perform_search(self):
         query = self.search_entry.get().lower()
@@ -3496,7 +3900,10 @@ class WatcherUI(tk.Tk):
             return
 
         target, tab_frame = info
-        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        if hasattr(self, "custom_theme") and self.custom_theme:
+            theme = self.custom_theme
+        else:
+            theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
 
         for w in tab_frame.winfo_children():
             w.destroy()
@@ -3508,7 +3915,12 @@ class WatcherUI(tk.Tk):
         for widget in self.settings_frame.winfo_children():
             widget.destroy()
         
-        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        if hasattr(self, "custom_theme") and self.custom_theme:
+            theme = self.custom_theme
+        else:
+            theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+
+        self.settings_frame.config(bg=theme['bg'])
         
         title = Label(
             self.settings_frame, 
@@ -3813,6 +4225,12 @@ class WatcherUI(tk.Tk):
         retention_entry.pack(side="right", padx=5)
 
 #---------------------------------------------------------------------------------------------------------------------------
+        current_theme = self.custom_theme if (hasattr(self, "custom_theme") and self.custom_theme) else (self.DARK_THEME if self.dark_mode else self.LIGHT_THEME)
+        self.theme_config_frame = Frame(tablist, bg=current_theme['bg'])
+        self.theme_config_tab = ThemeConfigTab(self.theme_config_frame, current_theme, self)
+        tablist.add(self.theme_config_frame, text="Theme Config")
+
+#---------------------------------------------------------------------------------------------------------------------------
         self.gbe_tab = Frame(tablist, bg=theme['bg'])
         tablist.add(self.gbe_tab, text="GBE Config")
         self.gse_tab = Frame(tablist, bg=theme['bg'])
@@ -4054,7 +4472,24 @@ class WatcherUI(tk.Tk):
 
     def __init__(self, file_queue: queue.Queue):
         super().__init__()
-        self.dark_mode = False
+        #------------------------------------
+        # Set default theme
+        default_theme = GENERAL_SETTINGS.get("default_theme", "dark")
+        self.custom_theme = None
+        self.dark_mode = True
+
+        # Load custom theme if enabled and if it's the default
+        if GENERAL_SETTINGS.get("custom_themes_enabled", False) and default_theme == "custom":
+            selected_theme_name = validate_selected_ctheme()
+            if selected_theme_name:
+                custom_themes = load_custom_themes()
+                self.custom_theme = custom_themes[selected_theme_name]
+            else:
+                # Custom theme not available, fall back to dark
+                self.dark_mode = True
+        elif default_theme == "light":
+            self.dark_mode = False
+        #------------------------------------
         self.menu_manager = MenuManager(self)
         self.selected_version = None
         self.steamless_releases_loaded = False
@@ -4197,7 +4632,7 @@ class WatcherUI(tk.Tk):
         )
         self.settings_btn.pack(side="left", padx=(0, 10))
 
-        self.settings_frame = Frame(self)
+        self.settings_frame = Frame(self, height=550)
         self.settings_frame.pack_propagate(False)
 
         self.menu_manager.register_menu('settings', self.settings_frame, self.settings_btn)
@@ -4243,7 +4678,6 @@ class WatcherUI(tk.Tk):
 
         self.user_settings = USER_SETTINGS
         self.general_settings = GENERAL_SETTINGS
-        self.dark_mode = self.general_settings.get("dark_mode", False)
         self.user_config = USER_SETTINGS
 
         self._init_game_config()
@@ -4252,7 +4686,7 @@ class WatcherUI(tk.Tk):
         self.stub_removal_options = {}
         self.tooltip_label = None
 
-        self.toggle_theme()
+        self._apply_theme()
 
     # ------------------------------------------------------------------
     def _on_search_mode_change(self, event=None):
@@ -4430,7 +4864,11 @@ class WatcherUI(tk.Tk):
                             except Exception:
                                 pass
 
-                        current_theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+                        if hasattr(self, "custom_theme") and self.custom_theme:
+                            current_theme = self.custom_theme
+                        else:
+                            current_theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+
                         game_folder_path = game_dir if game_dir else GAMES_ROOT / clean_title(title)
                         game_folder_pn = str(game_folder_path)
 
@@ -4557,7 +4995,10 @@ class WatcherUI(tk.Tk):
         self._show_attention_panel()
 
     def _show_attention_panel(self):
-        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        if hasattr(self, "custom_theme") and self.custom_theme:
+            theme = self.custom_theme
+        else:
+            theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
 
         if hasattr(self, 'menu_manager'):
             if self.menu_manager.is_menu_open('attention'):
@@ -4684,7 +5125,12 @@ class WatcherUI(tk.Tk):
 
         self._hide_attention_panel()
         self._hide_stub_removal_options()
-        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+
+        if hasattr(self, "custom_theme") and self.custom_theme:
+            theme = self.custom_theme
+        else:
+            theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+
         self.stub_removal_selected_files = []
         self._stub_removal_html_path = self.current_html_path
         self.stub_removal_frame = Frame(self, bg=theme['bg'])
@@ -4781,7 +5227,11 @@ class WatcherUI(tk.Tk):
         self._add_stub_removal_file(file_path)
 
     def _add_stub_removal_file(self, file_path: Path):
-        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        if hasattr(self, "custom_theme") and self.custom_theme:
+            theme = self.custom_theme
+        else:
+            theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+
         if file_path in self.stub_removal_selected_files:
             return
 
@@ -4840,7 +5290,11 @@ class WatcherUI(tk.Tk):
             show_custom_dialog(self, "warning", "No Files", "Please add at least one executable file")
             return
 
-        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        if hasattr(self, "custom_theme") and self.custom_theme:
+            theme = self.custom_theme
+        else:
+            theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+
         if hasattr(self, 'stub_removal_frame') and self.stub_removal_frame.winfo_exists():
             self.stub_removal_frame.pack_forget()
         self.stub_removal_options_frame = Frame(self, bg=theme['bg'])
@@ -4989,7 +5443,11 @@ class WatcherUI(tk.Tk):
         return display_names.get(key, key)
 
     def _show_tooltip(self, event, text):
-        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        if hasattr(self, "custom_theme") and self.custom_theme:
+            theme = self.custom_theme
+        else:
+            theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+
         if hasattr(self, 'tooltip_label') and self.tooltip_label:
             self.tooltip_label.destroy()
             self.tooltip_label = None
@@ -5024,7 +5482,11 @@ class WatcherUI(tk.Tk):
             self.tooltip_label = None
 
     def _show_execution_output(self, output_text: str = "", log_paths: dict = None):
-        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        if hasattr(self, "custom_theme") and self.custom_theme:
+            theme = self.custom_theme
+        else:
+            theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+
         log_paths = log_paths or {}
 
         if hasattr(self, 'output_frame') and self.output_frame.winfo_exists():
@@ -5096,7 +5558,11 @@ class WatcherUI(tk.Tk):
 
         self._hide_stub_removal_options()
 
-        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        if hasattr(self, "custom_theme") and self.custom_theme:
+            theme = self.custom_theme
+        else:
+            theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+
         if hasattr(self, 'output_frame') and self.output_frame.winfo_exists():
             self.output_frame.destroy()
 
@@ -5344,7 +5810,11 @@ class WatcherUI(tk.Tk):
                 self.log_viewer_frame.destroy()
             self.log_viewer_frame = None
 
-        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        if hasattr(self, "custom_theme") and self.custom_theme:
+            theme = self.custom_theme
+        else:
+            theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+
         self.log_viewer_frame = Frame(self, bg=theme['bg'])
         self.log_viewer_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
@@ -5482,7 +5952,10 @@ class WatcherUI(tk.Tk):
             btn.pack(fill="x", pady=2)
 
     def _show_log_file(self, log_path: Path) -> None:
-        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        if hasattr(self, "custom_theme") and self.custom_theme:
+            theme = self.custom_theme
+        else:
+            theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
 
         log_content = log_manager.read_log_file(log_path)
         self.log_text.config(state="normal")
@@ -5619,7 +6092,11 @@ class WatcherUI(tk.Tk):
         for widget in self.game_config_frame.winfo_children():
             widget.destroy()
 
-        theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+        if hasattr(self, "custom_theme") and self.custom_theme:
+            theme = self.custom_theme
+        else:
+            theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+
         self.game_config_frame.config(bg=theme['bg'])
 
         title = Label(
