@@ -6287,7 +6287,10 @@ class WatcherUI(tk.Tk):
                                     game_dir = Path(line.split("=", 1)[1].strip())
                                     break
                             if game_dir:
-                                self._remove_gpfile(game_dir)
+                                gpfile = game_dir / ".gpfile"
+                                if gpfile.exists():
+                                    gpfile.unlink()
+
                     except Exception as e:
                         print(f"Error cleaning .gpfile on cancel: {e}")
 
@@ -6451,6 +6454,9 @@ class WatcherUI(tk.Tk):
             on_select_callback=lambda v: setattr(self, 'selected_version', v),
             theme=self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
         )
+
+        if hasattr(self, 'drop_label') and self.drop_label.winfo_exists():
+            self.drop_label.focus_set()
 
         if hasattr(self, 'selected_file') and self.selected_file is not None:
             self._handle_file(self.selected_file)
