@@ -6458,9 +6458,6 @@ class WatcherUI(tk.Tk):
         if hasattr(self, 'drop_label') and self.drop_label.winfo_exists():
             self.drop_label.focus_set()
 
-        if hasattr(self, 'selected_file') and self.selected_file is not None:
-            self._handle_file(self.selected_file)
-
     def _is_wayland(self):
         return "wayland" in os.environ.get("XDG_SESSION_TYPE", "").lower()
 
