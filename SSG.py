@@ -922,188 +922,6 @@ def decrypt_api_key(encrypted_key: str, key: bytes) -> str | None:
         log_manager.log_error(Exception(f"Error decrypting API key: {e}"), "decrypt_api_key")
         return None
 
-def download_appid_html(appid: str) -> Path | None:
-    global all_html_files, file_status
-
-    appid = appid.strip()
-    if not appid.isdigit():
-        log_manager.log_error(f"⚠️ Invalid AppID: {appid}")
-        if global_ui:
-            show_custom_dialog(global_ui, "Invalid AppID", f"{appid} is not a valid numeric AppID")
-        return None
-
-    url = f"https://steamdb.info/app/{appid}/stats/"
-
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Referer': 'https://steamdb.info/',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'same-origin',
-        'Sec-Fetch-User': '?1',
-        'Upgrade-Insecure-Requests': '1',
-    }
-
-    try:
-        log_manager.log_message(f"Downloading SteamDB page for AppID {appid}...")
-
-        session = requests.Session()
-        session.headers.update(headers)
-        session.get('https://steamdb.info/', timeout=10)
-        response = session.get(url, timeout=30)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        game_name = soup.find("h1", itemprop="name").get_text(strip=True)
-        clean_name = clean_title(game_name)
-        HTML_FOLDER = pathlib.Path(__file__).resolve().parent / "HTML"
-        HTML_FOLDER.mkdir(parents=True, exist_ok=True)
-        html_path = HTML_FOLDER / f"{clean_name}.html"
-        html_path.write_text(response.text, encoding="utf-8")
-        log_manager.log_message(f"✅ Saved HTML to {html_path}")
-
-        if html_path not in all_html_files:
-            all_html_files.append(html_path)
-            file_status[html_path] = "waiting"
-            job_tracker.add_job()
-            threading.Thread(target=lambda: _run_main_in_thread(html_path), daemon=True).start()
-
-        if global_ui and hasattr(global_ui, 'search_entry'):
-            global_ui.after(0, lambda: global_ui.search_entry.delete(0, tk.END))
-
-        return html_path
-
-    except requests.exceptions.RequestException as e:
-        error_msg = str(e)
-        log_manager.log_message(f"❌ SteamDB download failed: {error_msg}")
-
-        steam_api_key = GENERAL_SETTINGS.get("steam_api_key", "").strip()
-        if steam_api_key:
-            log_manager.log_message(f"🔄 Trying Steam API with key...")
-            return download_appid_via_steam_api(appid, steam_api_key)
-        else:
-            if global_ui:
-                def show_options():
-                    result = messagebox.askyesnocancel(
-                        "Download Failed",
-                        f"Could not download AppID {appid}:\n{error_msg}\n\n"
-                        "Options:\n"
-                        "1. Open in browser to save manually (Yes)\n"
-                        "2. Add Steam API key in settings (No)\n"
-                        "3. Cancel (Cancel)"
-                    )
-                    if result:
-                        webbrowser.open(url)
-                        global_ui.search_entry.delete(0, tk.END)
-                    elif result is False:
-                        if hasattr(global_ui, 'menu_manager'):
-                           global_ui.menu_manager.toggle_menu('settings')
-                        elif hasattr(global_ui, 'toggle_settings_menu'):
-                           global_ui.toggle_settings_menu()
-            return None
-
-def download_appid_via_steam_api(appid: str, api_key: str) -> Path | None:
-    global all_html_files, file_status
-
-    try:
-        store_url = f"https://store.steampowered.com/api/appdetails?appids={appid}"
-        store_response = requests.get(store_url, timeout=30)
-        store_response.raise_for_status()
-        store_data = store_response.json()
-
-        if str(appid) not in store_data or not store_data[str(appid)].get('success', False):
-            log_manager.log_error(f"❌ Game {appid} not found on Steam Store")
-            if global_ui:
-                show_custom_dialog(global_ui, "Game Not Found", f"AppID {appid} not found")
-            return None
-
-        game_name = store_data[str(appid)]['data']['name']
-        clean_name = clean_title(game_name)
-
-        api_url = f"https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/"
-        params = {
-            "appid": appid,
-            "format": "json",
-            "key": api_key
-        }
-        response = requests.get(api_url, params=params, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-
-        if not data.get('game', {}).get('availableGameStats', {}).get('achievements'):
-            log_manager.log_error(f"⚠️ No achievements found for AppID {appid}")
-            if global_ui:
-                show_custom_dialog(global_ui, "No Achievements", f"AppID {appid} has no achievements")
-            return None
-
-        HTML_FOLDER = pathlib.Path(__file__).resolve().parent / "HTML"
-        HTML_FOLDER.mkdir(parents=True, exist_ok=True)
-
-        html_content = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>{game_name} - SteamDB</title>
-    <meta property="og:url" content="https://steamdb.info/app/{appid}/stats/">
-    <link rel="canonical" href="https://steamdb.info/app/{appid}/stats/">
-</head>
-<body>
-    <h1 itemprop="name">{game_name}</h1>
-    <div id="achievements">
-"""
-
-        for ach in data['game']['availableGameStats']['achievements']:
-            display_name = ach.get('displayName', 'Unknown')
-            name = ach.get('name', '')
-            description = ach.get('description', 'No description')
-            hidden = int(ach.get('hidden', 0))
-            icon_hash = ach.get('icon', '')
-            icongray_hash = ach.get('icongray', '')
-
-            icon_filename = f"{icon_hash}.jpg" if icon_hash else "No icon"
-            icongray_filename = f"{icongray_hash}.jpg" if icongray_hash else "No icon"
-
-            html_content += f"""
-        <div id="achievement-{name}">
-            <div class="achievement_api">{name}</div>
-            <div class="achievement_name">{display_name}</div>
-            <div class="achievement_desc">{description}</div>
-            <div class="achievement_image" data-name="{icon_filename}"></div>
-            <div class="achievement_image_small" data-name="{icongray_filename}"></div>
-            {"<span class=\"achievement_spoiler\"></span>" if hidden else ""}
-        </div>
-"""
-        html_content += """
-    </div>
-</body>
-</html>
-"""
-
-        html_path = HTML_FOLDER / f"{clean_name}.html"
-        html_path.write_text(html_content, encoding="utf-8")
-        log_manager.log_message(f"✅ Generated HTML for AppID {appid} ({game_name}) at {html_path}")
-
-        if html_path not in all_html_files:
-            all_html_files.append(html_path)
-            file_status[html_path] = "waiting"
-            job_tracker.add_job()
-            threading.Thread(target=lambda: _run_main_in_thread(html_path), daemon=True).start()
-
-        if global_ui and hasattr(global_ui, 'search_entry'):
-            global_ui.after(0, lambda: global_ui.search_entry.delete(0, tk.END))
-
-        return html_path
-
-    except Exception as e:
-        error_msg = str(e)
-        log_manager.log_error(Exception(f"Steam API error for AppID {appid}: {error_msg}"), "download_appid_via_steam_api")
-        if global_ui:
-            show_custom_dialog(global_ui, "Steam API Error", f"Failed to fetch data:\n{em}\n\nCheck your API key in Settings.")
-        return None
-
 # ----------------------------------------------------------------------
 def _closest_folder(base_path: Path, html_name: str) -> Path | None:
     candidates = [p for p in base_path.iterdir() if p.is_dir()]
@@ -1830,7 +1648,7 @@ GENERAL_SETTINGS = SettingsManager(
         "auto_update": True,
         "mp_prompt": "Ask",
         "hidden_prompt": "Ask",
-        "steam_api_key": "",
+        "search_language": "english",
         "log_settings": {"retention_days": 1}        
     }
 )
@@ -2601,6 +2419,381 @@ class CustomModalDialog:
         if self.dialog_frame:
             self.dialog_frame.grab_release()
             self.dialog_frame.destroy()
+
+# ------------------------------------------------------------
+class SearchManager:
+    def __init__(self, ui=None):
+        self._ui = ui
+        self.all_html_files = all_html_files
+        self.file_status = file_status
+
+    def set_ui(self, ui) -> None:
+        self._ui = ui
+
+    def _get_search_language(self) -> str:
+        return GENERAL_SETTINGS.get("search_language", "english")
+
+    def download_appid_html(self, appid: str) -> Path | None:
+        appid = appid.strip()
+        if not appid.isdigit():
+            log_manager.log_error(f"⚠️ Invalid AppID: {appid}")
+            if self._ui:
+                show_custom_dialog(self._ui, "Invalid AppID", f"{appid} is not a valid numeric AppID")
+            return None
+
+        websearch_language = self._get_search_language()
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept-Language': f'{websearch_language},en-US;q=0.9,en;q=0.8'
+        }
+
+        try:
+            log_manager.log_message(f"Downloading Steam Store data for AppID {appid}...")
+
+            # Get game info from Steam Store API
+            store_url = f"https://store.steampowered.com/api/appdetails?appids={appid}&l={websearch_language}"
+            store_response = requests.get(store_url, timeout=30)
+            store_response.raise_for_status()
+            store_data = store_response.json()
+
+            if str(appid) not in store_data or not store_data[str(appid)].get('success', False):
+                log_manager.log_error(f"❌ Game {appid} not found on Steam Store")
+                if self._ui:
+                    show_custom_dialog(self._ui, "Game Not Found", f"AppID {appid} not found")
+                return None
+
+            game_data = store_data[str(appid)]['data']
+            game_name = game_data.get('name', f"Unknown Game ({appid})")
+            clean_name = clean_title(game_name)
+
+            # Get DLC info
+            dlc_list = game_data.get('dlc', [])
+            dlc_info = {}
+            for dlc_id in dlc_list:
+                try:
+                    dlc_response = requests.get(
+                        f"https://store.steampowered.com/api/appdetails?appids={dlc_id}&l={websearch_language}",
+                        timeout=15
+                    )
+                    dlc_response.raise_for_status()
+                    dlc_data = dlc_response.json()
+                    if str(dlc_id) in dlc_data and dlc_data[str(dlc_id)].get('success', False):
+                        dlc_name = dlc_data[str(dlc_id)]['data'].get('name', f'DLC {dlc_id}')
+                        dlc_info[dlc_id] = dlc_name
+                except Exception as e:
+                    log_manager.log_message(f"⚠️ Could not fetch DLC {dlc_id}: {e}")
+                    dlc_info[dlc_id] = f"Unknown DLC {dlc_id}"
+
+            store_page_url = f"https://store.steampowered.com/app/{appid}/?l={websearch_language}"
+            store_achievements = {}
+
+            try:
+                page_response = requests.get(store_page_url, headers=headers, timeout=30)
+                page_response.raise_for_status()
+                page_soup = BeautifulSoup(page_response.text, 'html.parser')
+
+                achievement_rows = page_soup.select('div.achievement_row, div.achievementBlock')
+                if not achievement_rows:
+                    achievement_rows = page_soup.select('div[class*="achievement"]')
+
+                for row in achievement_rows:
+                    try:
+                        name = row.select_one('h3, h4, .achievementName')
+                        name = name.get_text(strip=True) if name else "Unknown"
+
+                        description = row.select_one('.achievementDesc, .description')
+                        description = description.get_text(strip=True) if description else "No description"
+
+                        hidden = 1 if row.select_one('.achievementHidden, .hidden') else 0
+
+                        icon_img = row.select_one('img')
+                        icon_hash = ""
+                        if icon_img and icon_img.get('src'):
+                            src = icon_img['src']
+                            match = re.search(r'/([a-f0-9]{40})\.jpg', src)
+                            if match:
+                                icon_hash = match.group(1)
+
+                        if name:
+                            store_achievements[name] = {
+                                'icon': icon_hash,
+                                'description': description,
+                                'hidden': hidden
+                            }
+
+                    except Exception as e:
+                        log_manager.log_message(f"⚠️ Error parsing store achievement: {e}")
+                        continue
+
+                log_manager.log_message(f"✅ Found {len(store_achievements)} achievements on Store page")
+
+            except Exception as e:
+                log_manager.log_message(f"⚠️ Could not scrape store page: {e}")
+
+            community_url = f"https://steamcommunity.com/stats/{appid}/achievements/"
+            community_achievements = {}
+
+            try:
+                log_manager.log_message(f"🔍 Scraping Community stats page for gray icons...")
+                community_response = requests.get(community_url, headers=headers, timeout=30)
+
+                if community_response.status_code == 403:
+                    log_manager.log_message(f"⚠️ Community page access denied (403) for {appid}")
+                else:
+                    community_response.raise_for_status()
+                    community_soup = BeautifulSoup(community_response.text, 'html.parser')
+
+                    for row in community_soup.select('div.achieveRow'):
+                        try:
+                            img_tag = row.select_one('div.achieveImgHolder img')
+                            icon_hash = ""
+                            if img_tag and img_tag.get('src'):
+                                src = img_tag['src']
+                                match = re.search(r'/([a-f0-9]{40})\.jpg', src)
+                                if match:
+                                    icon_hash = match.group(1)
+
+                            name_tag = row.select_one('div.achieveTxt h3')
+                            name = name_tag.get_text(strip=True) if name_tag else "Unknown"
+
+                            desc_tag = row.select_one('div.achieveTxt h5')
+                            description = desc_tag.get_text(strip=True) if desc_tag else ""
+
+                            if name:
+                                community_achievements[name] = {
+                                    'icon': icon_hash,
+                                    'description': description
+                                }
+
+                        except Exception as e:
+                            log_manager.log_message(f"⚠️ Error parsing community achievement: {e}")
+                            continue
+
+                    log_manager.log_message(f"✅ Found {len(community_achievements)} achievements on Community page")
+
+            except Exception as e:
+                log_manager.log_message(f"⚠️ Could not scrape community page: {e}")
+
+            achievements = []
+
+            all_names = set(store_achievements.keys()) | set(community_achievements.keys())
+
+            for name in all_names:
+                store_data = store_achievements.get(name, {})
+                community_data = community_achievements.get(name, {})
+
+                description = store_data.get('description', community_data.get('description', 'No description'))
+                hidden = store_data.get('hidden', 0)
+
+                icon_hash = store_data.get('icon', '')
+                icongray_hash = community_data.get('icon', '')
+
+                if not icon_hash and icongray_hash:
+                    icon_hash = icongray_hash
+                if not icongray_hash and icon_hash:
+                    icongray_hash = icon_hash
+
+                achievements.append({
+                    'name': name,
+                    'displayName': name,
+                    'description': description,
+                    'hidden': hidden,
+                    'icon': icon_hash,
+                    'icongray': icongray_hash
+                })
+
+            achievements.sort(key=lambda x: x['name'].lower())
+
+            html_folder = pathlib.Path(__file__).resolve().parent / "HTML"
+            html_folder.mkdir(parents=True, exist_ok=True)
+            html_path = html_folder / f"{clean_name}.html"
+
+            html_content = f"""<!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>{game_name} - SteamDB</title>
+        <meta property="og:url" content="https://steamdb.info/app/{appid}/stats/">
+        <link rel="canonical" href="https://steamdb.info/app/{appid}/stats/">
+    </head>
+    <body>
+        <h1 itemprop="name">{game_name}</h1>
+        <div id="achievements">"""
+
+            for ach in achievements:
+                display_name = ach.get('displayName', 'Unknown')
+                name = ach.get('name', '')
+                description = ach.get('description', 'No description')
+                hidden = int(ach.get('hidden', 0))
+                icon_hash = ach.get('icon', '')
+                icongray_hash = ach.get('icongray', '')
+
+                icon_filename = f"{icon_hash}.jpg" if icon_hash else "No icon"
+                icongray_filename = f"{icongray_hash}.jpg" if icongray_hash else "No icon"
+
+                html_content += f"""
+            <div id="achievement-{name}">
+                <div class="achievement_api">{name}</div>
+                <div class="achievement_name">{display_name}</div>
+                <div class="achievement_desc">{description}</div>
+                <div class="achievement_image" data-name="{icon_filename}"></div>
+                <div class="achievement_image_small" data-name="{icongray_filename}"></div>
+                {"<span class=\"achievement_spoiler\"></span>" if hidden else ""}
+            </div>"""
+
+            if dlc_info:
+                html_content += f"<!-- DLC Information:\n"
+                for dlc_id, dlc_name in dlc_info.items():
+                    html_content += f"        DLC {dlc_id}: {dlc_name}\n"
+                html_content += "    -->"
+
+            html_content += """
+    </div>
+    </body>
+    </html>"""
+
+            html_path.write_text(html_content, encoding="utf-8")
+            log_manager.log_message(f"✅ Generated HTML for AppID {appid} ({game_name}) at {html_path}")
+
+            if html_path not in self.all_html_files:
+                self.all_html_files.append(html_path)
+                self.file_status[html_path] = "waiting"
+                job_tracker.add_job()
+                threading.Thread(target=lambda: _run_main_in_thread(html_path), daemon=True).start()
+
+            if self._ui and hasattr(self._ui, 'search_entry'):
+                self._ui.after(0, lambda: self._ui.search_entry.delete(0, tk.END))
+
+            return html_path
+
+        except requests.exceptions.RequestException as e:
+            error_msg = str(e)
+            log_manager.log_message(f"❌ Request failed for AppID {appid}: {error_msg}")
+            if self._ui:
+                def show_options():
+                    result = messagebox.askyesnocancel(
+                        "Download Failed",
+                        f"Could not download AppID {appid}:\n{error_msg}\n\n"
+                        "Options:\n"
+                        "1. Open in browser to save manually (Yes)\n"
+                        "2. Check your internet connection (No)\n"
+                        "3. Cancel (Cancel)"
+                    )
+                    if result:
+                        webbrowser.open(f"https://store.steampowered.com/app/{appid}/")
+                        if self._ui:
+                            self._ui.search_entry.delete(0, tk.END)
+                show_options()
+            return None
+
+        except Exception as e:
+            error_msg = str(e)
+            log_manager.log_error(Exception(f"Error processing AppID {appid}: {error_msg}"), "download_appid_html")
+            if self._ui:
+                show_custom_dialog(self._ui, "Error", f"Failed to process AppID {appid}:\n{error_msg}")
+            return None
+
+    def download_appid_via_steam_api(self, appid: str, api_key: str) -> Path | None:
+        try:
+            store_url = f"https://store.steampowered.com/api/appdetails?appids={appid}"
+            store_response = requests.get(store_url, timeout=30)
+            store_response.raise_for_status()
+            store_data = store_response.json()
+
+            if str(appid) not in store_data or not store_data[str(appid)].get('success', False):
+                log_manager.log_error(f"❌ Game {appid} not found on Steam Store")
+                if self._ui:
+                    show_custom_dialog(self._ui, "Game Not Found", f"AppID {appid} not found")
+                return None
+
+            game_name = store_data[str(appid)]['data']['name']
+            clean_name = clean_title(game_name)
+
+            api_url = f"https://api.steampowered.com/ISteamUserStats/GetSchemaForGame/v2/"
+            params = {
+                "appid": appid,
+                "format": "json",
+                "key": api_key
+            }
+            response = requests.get(api_url, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            if not data.get('game', {}).get('availableGameStats', {}).get('achievements'):
+                log_manager.log_error(f"⚠️ No achievements found for AppID {appid}")
+                if self._ui:
+                    show_custom_dialog(self._ui, "No Achievements", f"AppID {appid} has no achievements")
+                return None
+
+            html_folder = pathlib.Path(__file__).resolve().parent / "HTML"
+            html_folder.mkdir(parents=True, exist_ok=True)
+
+            html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>{game_name} - SteamDB</title>
+    <meta property="og:url" content="https://steamdb.info/app/{appid}/stats/">
+    <link rel="canonical" href="https://steamdb.info/app/{appid}/stats/">
+</head>
+<body>
+    <h1 itemprop="name">{game_name}</h1>
+    <div id="achievements">
+"""
+
+            for ach in data['game']['availableGameStats']['achievements']:
+                display_name = ach.get('displayName', 'Unknown')
+                name = ach.get('name', '')
+                description = ach.get('description', 'No description')
+                hidden = int(ach.get('hidden', 0))
+                icon_hash = ach.get('icon', '')
+                icongray_hash = ach.get('icongray', '')
+
+                icon_filename = f"{icon_hash}.jpg" if icon_hash else "No icon"
+                icongray_filename = f"{icongray_hash}.jpg" if icongray_hash else "No icon"
+
+                html_content += f"""
+        <div id="achievement-{name}">
+            <div class="achievement_api">{name}</div>
+            <div class="achievement_name">{display_name}</div>
+            <div class="achievement_desc">{description}</div>
+            <div class="achievement_image" data-name="{icon_filename}"></div>
+            <div class="achievement_image_small" data-name="{icongray_filename}"></div>
+            {"<span class=\"achievement_spoiler\"></span>" if hidden else ""}
+        </div>
+"""
+            html_content += """
+    </div>
+</body>
+</html>
+"""
+
+            html_path = html_folder / f"{clean_name}.html"
+            html_path.write_text(html_content, encoding="utf-8")
+            log_manager.log_message(f"✅ Generated HTML for AppID {appid} ({game_name}) at {html_path}")
+
+            if html_path not in self.all_html_files:
+                self.all_html_files.append(html_path)
+                self.file_status[html_path] = "waiting"
+                job_tracker.add_job()
+                threading.Thread(target=lambda: _run_main_in_thread(html_path), daemon=True).start()
+
+            if self._ui and hasattr(self._ui, 'search_entry'):
+                self._ui.after(0, lambda: self._ui.search_entry.delete(0, tk.END))
+
+            return html_path
+
+        except Exception as e:
+            error_msg = str(e)
+            log_manager.log_error(Exception(f"Steam API error for AppID {appid}: {error_msg}"), "download_appid_via_steam_api")
+            if self._ui:
+                show_custom_dialog(self._ui, "Steam API Error", f"Failed to fetch data:\n{error_msg}\n\nCheck your API key in Settings.")
+            return None
+
+    def filter_local_search(self, search_text: str, html_files: list[Path]) -> list[Path]:
+        if not search_text:
+            return []
+        return [p for p in html_files if search_text.lower() in p.name.lower()]
 
 # ------------------------------------------------------------
 class DownloadManager:
@@ -4123,6 +4316,30 @@ class WatcherUI(tk.Tk):
         separator = Frame(general_container, height=2, bg=theme['border'])
         separator.pack(fill="x", pady=(0, 10))
 
+        language_frame = Frame(general_container, bg=theme['bg'])
+        language_frame.pack(fill="x", pady=5)
+
+        Label(
+            language_frame,
+            text="Language:",
+            bg=theme['bg'],
+            fg=theme['fg']
+        ).pack(side="left", padx=5)
+
+        self.search_language_var = tk.StringVar(value=GENERAL_SETTINGS.get("search_language", "english"))
+        language_dropdown = ttk.Combobox(
+            language_frame,
+            textvariable=self.search_language_var,
+            values=["arabic", "bulgarian", "schinese", "tchinese", "czech", "danish", "dutch", "english", "finnish", "french", "german", "greek", "hungarian", "italian", "japanese", "koreana", "norwegian", "polish", "portuguese", "brazilian", "romanian", "russian", "spanish", "latam", "swedish", "thai", "turkish", "ukrainian", "vietnamese"],
+            state="readonly",
+            width=12
+        )
+        language_dropdown.pack(side="left", padx=5)
+        language_dropdown.bind("<<ComboboxSelected>>", lambda e: (
+            GENERAL_SETTINGS.set("search_language", self.search_language_var.get()),
+            log_manager.log_message(f"Search language set to: {self.search_language_var.get()}")
+        ))
+
         api_key_frame = Frame(general_container, bg=theme['bg'])
         api_key_frame.pack(fill="x", pady=5)
 
@@ -4494,6 +4711,9 @@ class WatcherUI(tk.Tk):
         self.selected_version = None
         self.steamless_releases_loaded = False
         self.steamless_window_id = None
+        self.search_manager = SearchManager(self)
+        self.search_manager.set_ui(self)
+        self.search_language_var = tk.StringVar(value=GENERAL_SETTINGS.get("search_language", "english"))
         self.download_managers = {
             "steamless": DownloadManager("steamless", self),
             "gbe": DownloadManager("gbe", self),
@@ -4714,15 +4934,10 @@ class WatcherUI(tk.Tk):
     def _perform_appid_search(self):
         appid = self.search_entry.get().strip()
         if appid:
-            threading.Thread(target=download_appid_html, args=(appid,), daemon=True).start()
+            threading.Thread(target=self.search_manager.download_appid_html, args=(appid,), daemon=True).start()
 
     def _filter_local_search(self, search_text: str):
-        if not search_text:
-            self.filtered_html_files = []
-            self.refresh_file_list(all_html_files, file_status)
-            return
-
-        filtered = [p for p in all_html_files if search_text.lower() in p.name.lower()]
+        filtered = self.search_manager.filter_local_search(search_text, all_html_files)
 
         self.filtered_html_files = filtered
         self.refresh_file_list(filtered, file_status)
