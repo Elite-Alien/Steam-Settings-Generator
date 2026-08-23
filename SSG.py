@@ -7005,6 +7005,11 @@ class WatcherUI(tk.Tk):
                     dest_steam_settings = lbp_path.parent / "steam_settings"
 
                     linux_files = ["libsteam_api.so", "steamclient.so"]
+                    lbp_name = gp_data.get("LBP_NAME", "")
+
+                    if lbp_name and lbp_name.endswith('.so') and lbp_name not in linux_files:
+                        linux_files.append(lbp_name)
+
                     for file_name in linux_files:
                         file_path = lib_dir / file_name
                         if file_path.exists():
@@ -7036,11 +7041,27 @@ class WatcherUI(tk.Tk):
                             shutil.copy2(item, dest)
                             log_manager.log_message(f"Copied {item.name} to {lib_dir}")
 
+                            if lbp_name and lbp_name.endswith('.so') and lbp_name not in ["libsteam_api.so", "steamclient.so"]:
+
+                                standard_name = None
+                                if lbp_name.startswith("libsteam_api"):
+                                    standard_name = "libsteam_api.so"
+                                elif lbp_name.startswith("steamclient"):
+                                    standard_name = "steamclient.so"
+
+                                if standard_name and item.name == standard_name:
+                                    new_dest = lib_dir / lbp_name
+                                    if new_dest.exists():
+                                        new_dest.unlink()
+                                    dest.rename(new_dest)
+                                    log_manager.log_message(f"Renamed {item.name} to {lbp_name}")
+
                 if platform in ["Windows", "Linux"]:
                     if self.winfo_exists():
                         show_custom_dialog(self, "info", "Success", f"{emulator.upper()} files installed")
 
                 self.game_config_frame.pack_forget()
+                self.game_config_visible = False
                 self.processing_step = 0
                 self.selected_file = None
                 self.current_html_path = None
