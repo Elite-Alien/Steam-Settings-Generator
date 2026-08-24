@@ -8,6 +8,7 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 from cryptography.fernet import Fernet
 from typing import Dict, Any, Optional
+from PIL import Image, ImageTk
 import tkinter as tk
 
 all_html_files: list[Path] = []
@@ -309,6 +310,7 @@ APP_URL_TEMPLATE = "https://shared.fastly.steamstatic.com/community_assets/image
 APP_FOLDER = pathlib.Path(__file__).resolve().parent / ".app"
 APP_FOLDER.mkdir(parents=True, exist_ok=True)
 #-------------------------------------------------------------
+ICON_SIZE = 40   # Change to 16, 24, 48, 64, etc. To get the download list icon to change sizes.
 THEMES_FOLDER = APP_FOLDER / "themes"
 THEMES_FOLDER.mkdir(parents=True, exist_ok=True)
 SELECTED_CTHEME_FILE = APP_FOLDER / "selected_ctheme.json"
@@ -1102,6 +1104,31 @@ def get_image_filename(tag) -> str:
     return base if base.lower().endswith(".jpg") else f"{base}.jpg"
 
 
+def collect_icon_names(soup: BeautifulSoup, app_id: str) -> list[str]:
+    names = []
+    # Look for rows with specific icon type indicators
+    for row in soup.find_all('tr'):
+        icon_type_cell = row.find('td', class_='span3')
+        if icon_type_cell:
+            icon_type = icon_type_cell.get_text(strip=True).lower()
+            if icon_type in ('clienticon', 'clienttga', 'icon'):
+                all_tds = row.find_all('td')
+                for td in all_tds:
+                    link = td.find('a', href=True)
+                    if link:
+                        href = link.get('href', '')
+                        if href and app_id in href:
+                            parts = href.split('/')
+                            if parts:
+                                filename = parts[-1]
+                                if filename:
+                                    names.append(filename)
+
+                        link_text = link.get_text(strip=True)
+                        if link_text and not href:
+                            names.append(link_text)
+    return list(names)
+
 def safe_folder_name(name: str) -> str:
     illegal = r'[\/:*?"<>|]'
     name = re.sub(illegal, "_", name)
@@ -1112,6 +1139,25 @@ def safe_folder_name(name: str) -> str:
 def clean_title(raw_title: str) -> str:
     title = raw_title.strip()
     return safe_folder_name(title)
+
+def get_game_icon_path(game_folder: Path) -> Path:
+    icons_folder = game_folder / "icons"
+    if icons_folder.exists():
+        # Check for .ico first
+        ico_files = list(icons_folder.glob("*.ico"))
+        if ico_files:
+            return ico_files[0]
+        # Then .tga
+        tga_files = list(icons_folder.glob("*.tga"))
+        if tga_files:
+            return tga_files[0]
+        # Then .jpg
+        jpg_files = list(icons_folder.glob("*.jpg"))
+        if jpg_files:
+            return jpg_files[0]
+    # Fallback to default
+    default_icon = APP_FOLDER / "icons" / "gamelist.jpg"
+    return default_icon if default_icon.exists() else icons_folder / "gamelist.jpg"
 
 # ----------------------------------------------------------------------
 def main():
@@ -1411,6 +1457,23 @@ def main():
         finally:
             if temp_path.exists():
                 temp_path.unlink()
+
+    if app_id:
+        icons_folder = base_folder / "icons"
+        icons_folder.mkdir(parents=True, exist_ok=True)
+        icon_names = collect_icon_names(soup, app_id)
+        if icon_names:
+            existing_icons = {p.name for p in icons_folder.iterdir() if p.is_file()}
+            missing_icons = [f for f in icon_names if f not in existing_icons]
+            if missing_icons:
+                icon_cb = progress_manager._get_progress_cb(app_id, html_path)
+                downloaded_icon_cnt = download_images(
+                    app_id,
+                    missing_icons,
+                    icons_folder,
+                    progress_cb=icon_cb,
+                )
+                log_manager.log_message(f"Downloaded {downloaded_icon_cnt} icon(s) to {icons_folder}")
 
     with dlc_lock:
         try:
@@ -2156,7 +2219,10 @@ class DropZoneHelper:
 
         if self.allowed_extensions:
             if not any(file_path.name.lower().endswith(ext) for ext in self.allowed_extensions):
-                show_custom_dialog(self, "warning", "Invalid File", f"Only {', '.join(self.allowed_extensions)} files are supported")
+                parent_widget = self.parent 
+                while parent_widget and not (hasattr(parent_widget, 'LIGHT_THEME') and hasattr(parent_widget, 'DARK_THEME')):
+                     parent_widget = parent_widget.master
+                show_custom_dialog(parent_widget or self.parent, "warning", "Invalid File", f"Only {', '.join(self.allowed_extensions)} files are supported")
                 return
 
         if self.on_files_callback:
@@ -4749,7 +4815,7 @@ class WatcherUI(tk.Tk):
         )
 
         self.title("SSG: Watching for HTML files")
-        self.geometry("800x1000")
+        self.geometry("860x1000")
         self.resizable(False, False)
 
         self.top_bar = Frame(self)
@@ -5094,6 +5160,20 @@ class WatcherUI(tk.Tk):
                         top = Frame(outer, bg=current_theme['widget_bg'])
                         top.pack(fill="x", padx=8, pady=4)
 
+                        icon_path = get_game_icon_path(game_folder_path)
+                        try:
+                            pil_img = Image.open(icon_path)
+                            pil_img = pil_img.resize((ICON_SIZE, ICON_SIZE))
+                            icon_img = ImageTk.PhotoImage(pil_img)
+                            icon_label = Label(top, image=icon_img, bg=current_theme['widget_bg'])
+                            icon_label.image = icon_img
+                            icon_label.pack(side="left", padx=(0, 8))
+                        except Exception:
+                            log_manager.log_message(f"Failed to load icon {icon_path}: {e}")
+                            # If image fails to load, create empty space
+                            icon_label = Label(top, width=2, bg=current_theme['widget_bg'])
+                            icon_label.pack(side="left", padx=(0, 8))
+
                         name_label = self._make_scrolling_label(top, title, title_max_px)
                         name_label.config(bg=current_theme['widget_bg'], fg=current_theme['fg'])
                         name_label.pack(side="left")
@@ -5157,6 +5237,7 @@ class WatcherUI(tk.Tk):
                             "bottom_frame": bottom,
                             "path_label": path_lbl,
                             "name_label": name_label,
+                            "icon_label": icon_label,
                             "attention_btn": attention_btn,
                             "close_btn": close_btn,
                          }
