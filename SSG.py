@@ -317,8 +317,6 @@ SELECTED_CTHEME_FILE = APP_FOLDER / "selected_ctheme.json"
 #-------------------------------------------------------------
 VERSION_FILE = APP_FOLDER / "version.txt"
 UPDATE_CHECK_FILE = APP_FOLDER / "update_check.json"
-GBE_VERSION_FILE = APP_FOLDER / "gbe.txt"
-GSE_VERSION_FILE = APP_FOLDER / "gse.txt"
 #-------------------------------------------------------------
 LATEST_RELEASE_URL = "https://api.github.com/repos/Elite-Alien/Steam-Settings-Generator/releases/latest"
 RELEASE_URL = "https://api.github.com/repos/Elite-Alien/Steam-Settings-Generator/releases"
@@ -326,20 +324,7 @@ DLM_VERSION_FILE = APP_FOLDER / "dlm_versions.json"
 DLM_CACHE_FILE = APP_FOLDER / "dlm_cache.json"
 #-------------------------------------------------------------
 GBE_FOLDER = APP_FOLDER / "gbe"
-GBE_LINUX = GBE_FOLDER / "Linux"
-GBE_LINUX.mkdir(parents=True, exist_ok=True)
-GBE_WINDOWS = GBE_FOLDER / "Windows"
-GBE_WINDOWS.mkdir(parents=True, exist_ok=True)
-GBE_WINDOWS_CLIENT = GBE_WINDOWS / "client"
-GBE_WINDOWS_CLIENT.mkdir(parents=True, exist_ok=True)
-#-------------------------------------------------------------
 GSE_FOLDER = APP_FOLDER / "gse"
-GSE_LINUX = GSE_FOLDER / "Linux"
-GSE_LINUX.mkdir(parents=True, exist_ok=True)
-GSE_WINDOWS = GSE_FOLDER / "Windows"
-GSE_WINDOWS.mkdir(parents=True, exist_ok=True)
-GSE_WINDOWS_CLIENT = GSE_WINDOWS / "client"
-GSE_WINDOWS_CLIENT.mkdir(parents=True, exist_ok=True)
 #-------------------------------------------------------------
 LOGS_FOLDER = APP_FOLDER / "logs"
 LOGS_FOLDER.mkdir(parents=True, exist_ok=True)
@@ -4237,7 +4222,7 @@ class WatcherUI(tk.Tk):
             update_frame,
             text="Automatic Update Check",
             variable=self.auto_update_var,
-            command=lambda: self._toggle_auto_update(target='app'),
+            command=lambda: self._toggle_auto_update(),
             bg=theme['bg'],
             fg=theme['fg'],
             activebackground=theme['bg'],
