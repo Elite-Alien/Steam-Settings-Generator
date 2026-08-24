@@ -7653,7 +7653,7 @@ if __name__ == "__main__":
         watcher_thread.start()
 
     if not VERSION_FILE.exists():
-        VERSION_FILE.write_text("v0.5", encoding="utf-8")
+        VERSION_FILE.write_text("v0.6", encoding="utf-8")
     
     DOWNLOADS_FOLDER.mkdir(parents=True, exist_ok=True)
 
