@@ -3889,6 +3889,7 @@ class WatcherUI(tk.Tk):
         self.search_entry.config(bg=theme['widget_bg'], fg=theme['fg'], insertbackground=theme['fg'])
         self.search_btn.config(bg=theme['button_bg'], fg=theme['fg'])
         self.mass_close_btn.config(bg=theme['button_bg'], fg=theme['fg'])
+        self.stub_removal_btn.config(bg=theme['button_bg'], fg=theme['fg'])
         self.settings_btn.config(bg=theme['button_bg'], fg=theme['fg'])
         self.log_btn.config(bg=theme['button_bg'], fg=theme['fg'])
 
@@ -4874,6 +4875,18 @@ class WatcherUI(tk.Tk):
         )
         self.mass_close_btn.pack(side="left", padx=(20, 0))
 
+        self.stub_removal_btn = Button(
+            self.control_bar,
+            text="🔠",
+            font=('Arial', 8),
+            command=lambda: self._show_stub_removal_panel(from_button=True),
+            bd=0,
+            relief='flat',
+            bg=self.LIGHT_THEME['button_bg'],
+            fg=self.LIGHT_THEME['fg']
+        )
+        self.stub_removal_btn.pack(side="left", padx=(10, 0))
+
         self.counter_label = tk.Label(self.control_bar, text="Job Count: 0", font=("Helvetica", 12))
         self.counter_label.pack(side="left", expand=True)
 
@@ -4943,6 +4956,8 @@ class WatcherUI(tk.Tk):
         self.inner_frame = Frame(self.canvas)
         self._row_widgets: dict[Path, dict[str, ttk.Progressbar | Label]] = {}
         self.canvas.create_window((0, 0), window=self.inner_frame, anchor="nw")
+
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfig("all", width=e.width))
 
         self.attention_frame = Frame(self)
         self.attention_visible = False
@@ -5153,9 +5168,8 @@ class WatcherUI(tk.Tk):
                         game_folder_path = game_dir if game_dir else GAMES_ROOT / clean_title(title)
                         game_folder_pn = str(game_folder_path)
 
-                        outer = Frame(self.inner_frame, bd=2, relief="groove", width=row_width, height=80, bg=current_theme['widget_bg'], highlightbackground=current_theme['border'])
-                        outer.grid(row=idx, column=0, pady=8, padx=(inset_pad, right_pad))
-                        outer.grid_propagate(False)
+                        outer = Frame(self.inner_frame, bd=2, relief="groove", height=80, bg=current_theme['widget_bg'], highlightbackground=current_theme['border'])
+                        outer.grid(row=idx, column=0, pady=8, padx=(inset_pad, right_pad), sticky="ew")
 
                         top = Frame(outer, bg=current_theme['widget_bg'])
                         top.pack(fill="x", padx=8, pady=4)
@@ -5179,7 +5193,7 @@ class WatcherUI(tk.Tk):
                         name_label.pack(side="left")
 
                         prog = ttk.Progressbar(top, orient="horizontal", length=380, mode="determinate", style=f'{current_theme["progress"]}.Horizontal.TProgressbar')
-                        prog.pack(side="left", padx=12)
+                        prog.pack(side="left", padx=12, expand=True, fill="x")
 
                         percent_lbl = Label(top, text="0%", width=4, bg=current_theme['widget_bg'], fg=current_theme['fg'])
                         percent_lbl.pack(side="left", padx=4)
@@ -5346,7 +5360,7 @@ class WatcherUI(tk.Tk):
         Button(
             btn_frame,
             text="Stub Removal",
-            command=lambda: self._show_stub_removal_panel(),
+            command=lambda: self._show_stub_removal_panel(from_button=False),
             bg=theme['button_bg'],
             fg=theme['fg'],
             padx=15,
@@ -5415,7 +5429,9 @@ class WatcherUI(tk.Tk):
 
         self._hide_attention_panel()
 
-    def _show_stub_removal_panel(self):
+    def _show_stub_removal_panel(self, from_button=False):
+        self._stub_removal_opened_from_button = from_button
+
         if hasattr(self, 'stub_removal_frame') and self.stub_removal_frame.winfo_exists():
             self.stub_removal_frame.destroy()
 
@@ -5513,7 +5529,9 @@ class WatcherUI(tk.Tk):
             self.tooltip_label = None
         if hasattr(self, '_stub_removal_html_path'):
             self.current_html_path = self._stub_removal_html_path
-        self._show_attention_panel()
+
+        if not getattr(self, '_stub_removal_opened_from_button', False):
+            self._show_attention_panel()
 
     def _handle_stub_removal_file(self, path):
         file_path = Path(path)
