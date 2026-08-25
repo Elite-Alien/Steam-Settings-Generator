@@ -2363,7 +2363,20 @@ class VersionDropdownHelper:
     def _get_installed_versions(self):
         versions = log_manager.load_dlm_versions()
         target_versions = versions.get(self.target, {})
-        return [v for v, installed in target_versions.items() if installed]
+        dlm_versions = [v for v, installed in target_versions.items() if installed]
+
+        tools_parent = APP_FOLDER / "tools" / f"{self.target}_tools"
+        dir_versions = []
+        if tools_parent.exists():
+            dir_versions = [d.name for d in tools_parent.iterdir() if d.is_dir()]
+
+        existing_in_both = [v for v in dlm_versions if v in dir_versions]
+        if existing_in_both:
+            return sorted(existing_in_both, reverse=True)
+        elif dir_versions:
+            return sorted(dir_versions, reverse=True)
+        else:
+            return dlm_versions
 
     def get_selected_version(self):
         return self.var.get() if self.var else None
@@ -6586,21 +6599,30 @@ class WatcherUI(tk.Tk):
 
     def _detect_platform(self, file_path: str):
         path = Path(file_path)
-        if path.suffix.lower() == '.exe':
-            self.current_platform = 'Windows'
-            self.emu_dropdown['values'] = ['GBE', 'GSE']
-            self.platform_label.config(text=f"Detected Platform: {self.current_platform}")
-            self.emu_var.set('GBE')
-        elif path.suffix.lower() in ('.x86', '.x86_64', '.sh', '.bin', ''):
-            self.current_platform = 'Linux'
-            self.emu_dropdown['values'] = ['GBE', 'GSE']
-            self.platform_label.config(text=f"Detected Platform: {self.current_platform}")
-            self.emu_var.set('GBE')
+        platform_emulators = {
+            '.exe': ('Windows', ['GBE', 'GSE']),
+            '.x86': ('Linux', ['GBE', 'GSE']),
+            '.x86_64': ('Linux', ['GBE', 'GSE']),
+            '.sh': ('Linux', ['GBE', 'GSE']),
+            '.bin': ('Linux', ['GBE', 'GSE']),
+            '': ('Linux', ['GBE', 'GSE'])
+        }
+
+        for ext, (platform, emus) in platform_emulators.items():
+            if path.suffix.lower() == ext or (ext == '' and path.suffix == ''):
+                self.current_platform = platform
+                self.emu_dropdown['values'] = emus
+                self.platform_label.config(text=f"Detected Platform: {self.current_platform}")
+
+                if not self.emu_var.get():
+                    self.emu_var.set('GBE')
+                break
         else:
             self.current_platform = 'Unknown'
             self.platform_label.config(text="Detected Platform: Unknown")
             self.emu_dropdown['values'] = ['GBE', 'GSE']
-            self.emu_var.set('GBE')
+            if not self.emu_var.get():
+                self.emu_var.set('GBE')
     
     def _console_file_prompt(self):
         log_manager.log_message("--- Console File Selection ---")
@@ -6714,20 +6736,63 @@ class WatcherUI(tk.Tk):
                 raise ValueError("Unsupported library type - must be .dll or .so")
 
             architecture = gp_data.get("ARCHITECTURE", "")
-            tool_suffix = "x32" if architecture == "x86" else "x64"
             emulator = self.selected_emulator.lower()
-            tools_dir = APP_FOLDER / "tools" / f"{emulator}_tools" / version
+            tools_parent = APP_FOLDER / "tools" / f"{emulator}_tools"
+            tools_dir = tools_parent / version
+
+            if not tools_dir.exists():
+                if tools_parent.exists():
+                    available_versions = sorted(
+                        [d.name for d in tools_parent.iterdir() if d.is_dir()],
+                        reverse=True
+                    )
+                    if available_versions:
+                        version = available_versions[0]
+                        tools_dir = tools_parent / version
+                        log_manager.log_message(
+                            f"⚠️ Version '{version}' not found for {emulator.upper()}, "
+                            f"using available version: {version}"
+                        )
+                    else:
+                        raise FileNotFoundError(
+                            f"No versions found in {tools_parent}. "
+                            f"Please install {emulator.upper()} tools first."
+                        )
+                else:
+                    raise FileNotFoundError(
+                        f"{emulator.upper()} tools directory not found at {tools_parent}. "
+                        f"Please install {emulator.upper()} tools first."
+                    )
 
             if is_windows:
-                tool_name = f"generate_interfaces_{tool_suffix}.exe"
-                tool_path = tools_dir / tool_name
+                possible_names = (
+                    ["generate_interfaces_x86.exe", "generate_interfaces_x64.exe"] 
+                    if emulator == "gbe" else 
+                    ["generate_interfaces_x32.exe", "generate_interfaces_x64.exe"]
+                )
+            else:
+                possible_names = (
+                    ["generate_interfaces_x86", "generate_interfaces_x64"] 
+                    if emulator == "gbe" else 
+                    ["generate_interfaces_x32", "generate_interfaces_x64"]
+                )
+
+            tool_path = None
+            for name in possible_names:
+                test_path = tools_dir / name
+                if test_path.exists():
+                    tool_path = test_path
+                    break
+
+            if tool_path is None:
+                raise FileNotFoundError(f"No interface tool found in {tools_dir}")
+
+            if is_windows:
                 if sys.platform.startswith("win"):
                     cmd = [str(tool_path), str(library_path)]
                 else:
                     cmd = ["wine", str(tool_path), str(library_path)]
             else:
-                tool_name = f"generate_interfaces_{tool_suffix}"
-                tool_path = tools_dir / tool_name
                 cmd = [str(tool_path), str(library_path)]
 
             steam_settings = game_dir / "steam_settings"
@@ -6915,17 +6980,26 @@ class WatcherUI(tk.Tk):
                 arch_dir = "x32" if arch_value in ["x86", "32"] else "x64"
                 emulator = self.selected_emulator.lower()
 
-                if not hasattr(self, 'selected_version') or self.selected_version is None:
-                    self.selected_version = self.version_dropdown_helper.get_selected_version()
-                    if self.selected_version is None:
-                        installed = self.version_dropdown_helper._get_installed_versions()
-                        if installed:
-                            self.selected_version = installed[0]
-                        else:
-                            show_custom_dialog(self, "error", "Error", "No emulator versions installed!")
-                            return
+                tools_parent = APP_FOLDER / "tools" / f"{emulator}_tools"
+                dir_versions = []
+                if tools_parent.exists():
+                    dir_versions = sorted(
+                        [d.name for d in tools_parent.iterdir() if d.is_dir()],
+                        reverse=True
+                    )
 
-                version = getattr(self, 'selected_version', self.version_dropdown_helper.get_selected_version())
+                if dir_versions:
+                    version = dir_versions[0]
+                else:
+                    versions_dict = log_manager.load_dlm_versions()
+                    target_versions = versions_dict.get(emulator, {})
+                    dlm_versions = [v for v, installed in target_versions.items() if installed]
+                    if dlm_versions:
+                        version = sorted(dlm_versions, reverse=True)[0]
+                    else:
+                        show_custom_dialog(self, "error", "Error", f"No {emulator.upper()} versions installed!")
+                        return
+
                 base_dir = APP_FOLDER / emulator / version
 
                 theme = self.DARK_THEME if hasattr(self, 'dark_mode') and self.dark_mode else self.LIGHT_THEME
@@ -6987,9 +7061,10 @@ class WatcherUI(tk.Tk):
 
                     if opp_api_exists or opp_client_exists:
                         src_dir_opp = base_dir / "Windows" / opposite_dir
+                        src_dir_opp_client = base_dir / "Windows" / "client" / opposite_dir
                         for dll_name, src, dst in (
                             (steam_api_opp,   src_dir_opp / steam_api_opp,   api_dir / steam_api_opp),
-                            (steamclient_opp, src_dir_opp / steamclient_opp, api_dir / steamclient_opp),):
+                            (steamclient_opp, src_dir_opp_client / steamclient_opp, api_dir / steamclient_opp),):
                             if src.exists():
                                 if dst.exists():
                                     bak = dst.with_suffix(".dll.bak")
@@ -7027,12 +7102,16 @@ class WatcherUI(tk.Tk):
                         shutil.copy2(steam_dll_src, steam_dll_dest)
                         log_manager.log_message(f"Copied Steam.dll from old folder to {api_dir}")
 
-                    loader_suffix = "x64" if arch_value.lower() in ("x86_64", "64") else "x32"
+                    if arch_value.lower() in ("x86_64", "64"):
+                        loader_suffixes = ["x64"]
+                    else:
+                        loader_suffixes = ["x86", "x32"]
+
                     client_src = base_dir / "Windows" / "client"
                     for item in client_src.iterdir():
                         if item.is_file() and not item.name.endswith('.bak'):
                             if "steamclient_loader" in item.name:
-                                if f"_{loader_suffix}" in item.name:
+                                if any(f"_{suf}" in item.name for suf in loader_suffixes):
                                     dest = game_dir / item.name
                                     shutil.copy2(item, dest)
                             else:
@@ -7116,7 +7195,7 @@ class WatcherUI(tk.Tk):
                                print(f"Could not patch ColdClientLoader.ini: {e}")
 
                        loader_path = None
-                       for cand in ("steamclient_loader_x64.exe", "steamclient_loader_x32.exe"):
+                       for cand in ("steamclient_loader_x64.exe", "steamclient_loader_x86.exe", "steamclient_loader_x32.exe"):
                            p = game_dir / cand
                            if p.is_file():
                                loader_path = p
