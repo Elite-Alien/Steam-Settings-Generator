@@ -1,10 +1,6 @@
 # Steam Settings Generator
 This tool creates the achievements.json, DLC files, downloads achievement images, makes the steam_appid.txt, and various other files it can make and obtain to place within the steam_settings folder or for use with the "steam_settings".
 
-If you want just the DLC or Achievement scraping by itself see my modular entries.
-1. https://github.com/Elite-Alien/Steam-Achievement-Scrapper/tree/main
-2. https://github.com/Elite-Alien/Steam-DLC-Scraper/tree/main
-
 If you use this and want a means to track your achievement process.
 - https://github.com/Elite-Alien/Achievement-Viewer
 
