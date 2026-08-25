@@ -324,6 +324,7 @@ DLM_VERSION_FILE = APP_FOLDER / "dlm_versions.json"
 DLM_CACHE_FILE = APP_FOLDER / "dlm_cache.json"
 #-------------------------------------------------------------
 GBE_FOLDER = APP_FOLDER / "gbe"
+#-------------------------------------------------------------
 GSE_FOLDER = APP_FOLDER / "gse"
 #-------------------------------------------------------------
 LOGS_FOLDER = APP_FOLDER / "logs"
@@ -2325,7 +2326,9 @@ class VersionDropdownHelper:
 
     def _create_dropdown(self):
         installed_versions = self._get_installed_versions()
-        if not installed_versions:
+        sorted_versions = sorted(installed_versions, reverse=True)
+    
+        if not sorted_versions:
             Label(
                 self.parent_frame,
                 text=f"No {self.target.upper()} versions installed",
@@ -2335,11 +2338,11 @@ class VersionDropdownHelper:
             return
 
         self.var = tk.StringVar()
-        if len(installed_versions) == 1 and self.disabled_if_single:
-            self.var.set(installed_versions[0])
+        if len(sorted_versions) == 1 and self.disabled_if_single:
+            self.var.set(sorted_versions[0])
             Label(
                 self.parent_frame,
-                text=f"{self.target.upper()} {installed_versions[0]}",
+                text=f"{self.target.upper()} {sorted_versions[0]}",
                 bg=self.theme['bg'],
                 fg=self.theme['fg']
             ).pack(side="left", padx=(0, 10))
@@ -2347,13 +2350,13 @@ class VersionDropdownHelper:
             self.dropdown = ttk.Combobox(
                 self.parent_frame,
                 textvariable=self.var,
-                values=sorted(installed_versions, reverse=True),
+                values=sorted_versions,
                 state="readonly",
                 width=15,
                 cursor="hand2"
             )
             self.dropdown.pack(side="left", padx=(0, 10))
-            self.var.set(installed_versions[0])
+            self.var.set(sorted_versions[0])
             if self.on_select_callback:
                 self.dropdown.bind("<<ComboboxSelected>>", lambda e: self.on_select_callback(self.var.get()))
 
@@ -6349,7 +6352,43 @@ class WatcherUI(tk.Tk):
         self.clipboard_check = None
         self.processing_step = 1
 
+    def _switch_to_gbe_tab(self):
+        for tablist in self.settings_frame.winfo_children():
+            if isinstance(tablist, ttk.Notebook):
+                for i in range(tablist.index("end")):
+                    if tablist.tab(i, "text") == "GBE Config":
+                        tablist.select(i)
+                        if hasattr(self, "custom_theme") and self.custom_theme:
+                            theme = self.custom_theme
+                        else:
+                            theme = self.DARK_THEME if self.dark_mode else self.LIGHT_THEME
+                        # Directly populate the GBE tab
+                        if hasattr(self, '_populate_download_tab') and hasattr(self, 'gbe_tab'):
+                            # Clear existing content first
+                            for w in self.gbe_tab.winfo_children():
+                                w.destroy()
+                            self._populate_download_tab("gbe", self.gbe_tab, theme)
+                        break
+
     def toggle_game_config(self, html_path: Path | None = None):
+        if not self.game_config_visible:
+            gbe_installed = GBE_FOLDER.exists() and any(GBE_FOLDER.iterdir())
+            gse_installed = GSE_FOLDER.exists() and any(GSE_FOLDER.iterdir())
+
+            if not gbe_installed and not gse_installed:
+                if self.winfo_exists():
+                    response = show_custom_dialog(self, "yes", "No Emulator Installed", "No GBE or GSE emulator found. Please install either GBE (Recommended) or GSE from Settings to proceed.")
+
+                    if response:
+                        self.menu_manager.close_all_menus()
+                        if hasattr(self, 'game_config_frame') and self.game_config_frame.winfo_exists():
+                            self.game_config_frame.pack_forget()
+                            self.game_config_visible = False
+                        self._hide_attention_panel()
+                        self.menu_manager.show_menu('settings')
+                        self.after(0, self._switch_to_gbe_tab)
+                return
+
         if self.game_config_visible:
             if self.processing_step == 2:
                 self.processing_step = 1
@@ -6665,7 +6704,7 @@ class WatcherUI(tk.Tk):
             except Exception as e:
                 show_custom_dialog(self, "error", "Error", f"Failed to save architecture: {str(e)}")
 
-    def _generate_interface_file(self, game_dir: Path, gp_data: dict):
+    def _generate_interface_file(self, game_dir: Path, gp_data: dict, version: str):
         try:
             library_path = Path(gp_data["LBP_PATH"])
             is_windows = library_path.suffix.lower() == '.dll'
@@ -6677,7 +6716,7 @@ class WatcherUI(tk.Tk):
             architecture = gp_data.get("ARCHITECTURE", "")
             tool_suffix = "x32" if architecture == "x86" else "x64"
             emulator = self.selected_emulator.lower()
-            tools_dir = APP_FOLDER / "tools" / f"{emulator}_tools"
+            tools_dir = APP_FOLDER / "tools" / f"{emulator}_tools" / version
 
             if is_windows:
                 tool_name = f"generate_interfaces_{tool_suffix}.exe"
@@ -6809,7 +6848,7 @@ class WatcherUI(tk.Tk):
                 temp_file = TEMP_FOLDER / f"{self.current_html_path.name}.txt"
                 game_dir = Path(temp_file.read_text().split("GAMEDIR=",1)[1].split("\n",1)[0].strip())
                 gpfile = game_dir / ".gpfile"
-
+                
                 app_id = None
                 if temp_file.exists():
                     for line in temp_file.read_text().splitlines():
@@ -6875,10 +6914,45 @@ class WatcherUI(tk.Tk):
 
                 arch_dir = "x32" if arch_value in ["x86", "32"] else "x64"
                 emulator = self.selected_emulator.lower()
-                version = getattr(self, 'selected_version', self.version_dropdown_helper.get_selected_version())
-                base_dir = APP_FOLDER / emulator / version if version else APP_FOLDER / emulator
 
-                success = self._generate_interface_file(game_dir, gp_data)
+                if not hasattr(self, 'selected_version') or self.selected_version is None:
+                    self.selected_version = self.version_dropdown_helper.get_selected_version()
+                    if self.selected_version is None:
+                        installed = self.version_dropdown_helper._get_installed_versions()
+                        if installed:
+                            self.selected_version = installed[0]
+                        else:
+                            show_custom_dialog(self, "error", "Error", "No emulator versions installed!")
+                            return
+
+                version = getattr(self, 'selected_version', self.version_dropdown_helper.get_selected_version())
+                base_dir = APP_FOLDER / emulator / version
+
+                theme = self.DARK_THEME if hasattr(self, 'dark_mode') and self.dark_mode else self.LIGHT_THEME
+
+                if not hasattr(self, 'version_dropdown_in_step2'):
+
+                    self.version_frame_step2 = Frame(self.game_config_frame, bg=theme['bg'])
+                    self.version_frame_step2.pack(pady=5, fill="x", padx=20)
+    
+                    self.version_label_step2 = Label(
+                        self.version_frame_step2,
+                        text="Emulator Version:",
+                        bg=theme['bg'],
+                        fg=theme['fg'],
+                        font=("Helvetica", 11)
+                    )
+                    self.version_label_step2.pack(side="left", padx=(0, 10))
+    
+                    self.version_dropdown_step2 = VersionDropdownHelper(
+                        self.version_frame_step2,
+                        target=self.selected_emulator.lower(),
+                        on_select_callback=lambda v: setattr(self, 'selected_version', v),
+                        theme=theme
+                    )
+                    self.version_dropdown_in_step2 = True
+
+                success = self._generate_interface_file(game_dir, gp_data, version)
                 if not success:
                     return
 
@@ -6895,8 +6969,6 @@ class WatcherUI(tk.Tk):
                     steam_api_opp   = "steam_api64.dll" if opposite_arch == "x86_64" else "steam_api.dll"
                     steamclient_opp = "steamclient64.dll" if opposite_arch == "x86_64" else "steamclient.dll"
 
-                    version = getattr(self, 'selected_version', self.version_dropdown_helper.get_selected_version())
-                    base_dir = APP_FOLDER / emulator / version if version else APP_FOLDER / emulator
                     src_dir_sel = base_dir / "Windows" / selected_dir
                     for dll_name in (steam_api_sel, steamclient_sel):
                         src = src_dir_sel / dll_name
