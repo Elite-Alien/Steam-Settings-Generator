@@ -31,6 +31,8 @@ sudo zypper install python3 python3-tk python3-requests python3-beautifulsoup4 p
 sudo emerge --ask dev-lang/python dev-python/requests dev-python/beautifulsoup4 dev-python/cryptography media-libs/pillow dev-python/bcrypt
 ```
 
+### Windows
+I've put some code into making a potential Window port at some point or have someone come along and contribute to this as a stepping stone for them. However, currently this isn't made with Windows completely in mind. Windows is sort of the second class citizen, sorry. If you wish to try this on Windows. I suggest using WSL and downloading a Linux Distro into Windows.
 
 # How To Use
 ### Extra Folder
