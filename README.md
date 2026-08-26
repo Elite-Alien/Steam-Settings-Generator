@@ -31,6 +31,7 @@ sudo zypper install python3 python3-tk python3-requests python3-beautifulsoup4 p
 sudo emerge --ask dev-lang/python dev-python/requests dev-python/beautifulsoup4 dev-python/cryptography media-libs/pillow dev-python/bcrypt
 ```
 
+# How To
 ### Extra Folder
 If you have any files like the "configs.overlay.ini", "sounds" (folder), "fonts" (folder), or other files this script does not make those or download sounds for you. It does make a "configs.user.ini" but that is based on your entries in the application currently via settings. Place all desired files inside the Extra folder located in the folder where SSG.py is at. Every time you run SSG.py it will copy those files into the "steam_settings" folder for each game.
 
