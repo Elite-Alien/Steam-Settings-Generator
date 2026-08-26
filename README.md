@@ -7,20 +7,27 @@ This is a Steam Emulator Configuration and Management Tool. It has many features
 
 ### Linux
 ### Ubuntu / Debian
+```
 sudo apt install python3 python3-tk python3-requests python3-bs4 python3-cryptography python3-pillow python3-bcrypt
-
+```
 ### Fedora
+```
 sudo dnf install python3 python3-tkinter python3-requests python3-beautifulsoup4 python3-cryptography python3-pillow python3-bcrypt
-
+```
 ### Arch
+```
 sudo pacman -S python python-requests python-beautifulsoup4 python-cryptography python-pillow python-bcrypt
+```
 
 ### OpenSUSE
+```
 sudo zypper install python3 python3-tk python3-requests python3-beautifulsoup4 python3-cryptography python3-Pillow python3-bcrypt
+```
 
 ### Gentoo
+```
 sudo emerge --ask dev-lang/python dev-python/requests dev-python/beautifulsoup4 dev-python/cryptography media-libs/pillow dev-python/bcrypt
-
+```
 
 ### Extra Folder
 If you have any files like the "configs.overlay.ini", "sounds" (folder), "fonts" (folder), or other files this script does not make those or download sounds for you. It does make a "configs.user.ini" but that is based on your entries in the application currently via settings. Place all desired files inside the Extra folder located in the folder where SSG.py is at. Every time you run SSG.py it will copy those files into the "steam_settings" folder for each game.
