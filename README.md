@@ -1,10 +1,5 @@
 # Steam Settings Generator
-This tool creates the achievements.json, DLC files, downloads achievement images, makes the steam_appid.txt, and various other files it can make and obtain to place within the steam_settings folder or for use with the "steam_settings".
-
-If you use this and want a means to track your achievement process.
-- https://github.com/Elite-Alien/Achievement-Viewer
-
-This script is basically those two combined but slightly altered in some areas. Along with added extra perks. I wrote this sloppy code on a whim because some of the other tools were broken and some could not even get data of delisted games. My adaptation of this will get delisted games and it tries to prevent you from timing yourself out on image downloads. As a SteamDB and Steam servers if scraping their images constantly you can get a timeout. So it logs the HTML file so you don't accidentally do it twice and end up downloading them again. It does still grab the text information, as that is all located in the saved HTML file you have on your local storage.
+This is a Steam Emulator Configuration and Management Tool. It has many features that other tools do not. It's packed full of extra goodies to make it simple to get achievement data and much more. Along with automating a handful of the work for you.
 
 ### Requirements
 1) Linux: This currently is only coded for Linux. You might be able to use WSL on Windows to install a Linux OS inside of Windows. How well that works I can't say, as I don't own a Windows PC only a Linux PC. (Not trying to preach to anyone, it's just I had someone ask to run this on Windows 10. Though if your still on Windows 10 in 2026 or later. I highly suggest switching to Linux if your not going to Windows 11. From my understanding Windows 10 ended support on 10/14/2025. You will not be getting updates for that OS like you properly would on a supported OS. So it's more of me trying to say keep yourself up to date.)
@@ -83,6 +78,9 @@ File Exploring is also an option.
 5. Let the script run and follow the prompts if any appear.
 6. Go to the "Games" folder beside SSG.py. The files will be in this folder.
 7. Done
+
+If you use this and want a means to track your achievement process.
+- https://github.com/Elite-Alien/Achievement-Viewer
 
 ## Disclaimer Statement
 Steam Settings Generator is an independent, open‑source application. It is not affiliated with, endorsed by, or sponsored by Valve Corporation, Steam, or any of Valve’s subsidiaries or related entities. The developers of Steam Settings Generator make no claim to ownership, trademark, or any other intellectual‑property rights in Valve’s products, services, or brand assets.
