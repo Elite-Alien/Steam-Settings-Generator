@@ -3,10 +3,11 @@ This is a Steam Emulator Configuration and Management Tool. It has many features
 
 # System Requirements
 ### Optional
-```
-(Optional) Steam API Key if you want to use it to get other Steam_Settings related things and just use SteamAPI for downloads. (Currently Only in source. Not in a full release build.)
-```
+Steam API Key: Not required, but optional if you choose to use it for AppID searches.
+
 ### Linux
+Some packages may very based on Distro. If I did not properly cover a Distro and it's packages, please let me know. I tried to get information on a number of them, some I do not even use.
+
 ### Ubuntu / Debian
 ```
 sudo apt install python3 python3-tk python3-requests python3-bs4 python3-cryptography python3-pillow python3-bcrypt
