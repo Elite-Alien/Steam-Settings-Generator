@@ -2,8 +2,8 @@
 This is a Steam Emulator Configuration and Management Tool. It has many features that other tools do not. It's packed full of extra goodies to make it simple to get achievement data and much more. Along with automating a handful of the work for you.
 
 # System Requirements
-```
 ### Optional
+```
 (Optional) Steam API Key if you want to use it to get other Steam_Settings related things and just use SteamAPI for downloads. (Currently Only in source. Not in a full release build.)
 ```
 ### Linux
