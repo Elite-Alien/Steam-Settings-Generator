@@ -61,7 +61,7 @@ You can mange general settings and choose to use a Steam API key or not. It's no
 ### Download Manager
 You can now manage emulators versions and potential other things if there is anything else to be added down the road. Steam-Settings-Generator now has the ability for you to decide what you want. No more auto update to the latest and backup of the old. If there is an issue in one version, you can skip it. Just click the download and anything installed will be checked off. Click the "X" and it will delete the installed version, returning it to the previous state. This download manager is also cached so you are not timing out do to constant looking at the releases. 
 
-***Steam Settings Generator downloads these for you, but we do not directly supply support for third-party software. Any issues about the downloads that aren't strictly a problem with downloading said files will be closed. Support for third-party software should be found with the given software you downloaded.***
+***Steam Settings Generator downloads these for you, but we do not directly supply support for third-party software. Any issues about the downloads that aren't strictly a problem with downloading said files will be closed. Support for third-party software should be found with the given software developers of said downloaded third-party software.***
 
 <img width="786" height="381" alt="SSG_DLM" src="https://github.com/user-attachments/assets/334038dd-6c2f-457e-9e20-e4e2145b7e84" />
 
