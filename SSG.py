@@ -1687,10 +1687,74 @@ USER_SETTINGS = SettingsManager(
         "account_name": "",
         "steamid": "76561197960287930",
         "language": "English",
-        "country": "US"
+        "country": "US",
+        "overlay_enabled": False,
+        "overlay_settings": {
+            "enable_experimental_overlay": "1",
+            "hook_delay_sec": "0",
+            "renderer_detector_timeout_sec": "15",
+            "disable_achievement_notification": "0",
+            "disable_friend_notification": "0",
+            "disable_achievement_progress": "0",
+            "disable_warning_any": "0",
+            "disable_warning_bad_appid": "0",
+            "disable_warning_local_save": "1",
+            "upload_achievements_icons_to_gpu": "1",
+            "fps_averaging_window": "10",
+            "overlay_always_show_user_info": "0",
+            "overlay_always_show_fps": "0",
+            "overlay_always_show_frametime": "0",
+            "overlay_always_show_playtime": "0",
+            "Font_Override": "Roboto-Medium.ttf",
+            "Font_Size": "16",
+            "Icon_Size": "64.0",
+            "Font_Glyph_Extra_Spacing_x": "1.0",
+            "Font_Glyph_Extra_Spacing_y": "0.0",
+            "Notification_R": "0.12",
+            "Notification_G": "0.14",
+            "Notification_B": "0.21",
+            "Notification_A": "1.0",
+            "Notification_Rounding": "10.0",
+            "Notification_Margin_x": "5.0",
+            "Notification_Margin_y": "5.0",
+            "Notification_Animation": "0.35",
+            "Notification_Duration_Progress": "6.0",
+            "Notification_Duration_Achievement": "7.0",
+            "Notification_Duration_Invitation": "8.0",
+            "Notification_Duration_Chat": "4.0",
+            "Achievement_Unlock_Datetime_Format": "%Y/%m/%d - %H:%M:%S",
+            "Background_R": "0.12",
+            "Background_G": "0.11",
+            "Background_B": "0.11",
+            "Background_A": "0.55",
+            "Element_R": "0.30",
+            "Element_G": "0.32",
+            "Element_B": "0.40",
+            "Element_A": "1.0",
+            "ElementHovered_R": "0.278",
+            "ElementHovered_G": "0.393",
+            "ElementHovered_B": "0.602",
+            "ElementHovered_A": "1.0",
+            "ElementActive_R": "-1.0",
+            "ElementActive_G": "-1.0",
+            "ElementActive_B": "-1.0",
+            "ElementActive_A": "-1.0",
+            "PosAchievement": "bot_right",
+            "PosInvitation": "top_right",
+            "PosChatMsg": "top_center",
+            "Stats_Background_R": "0.0",
+            "Stats_Background_G": "0.0",
+            "Stats_Background_B": "0.0",
+            "Stats_Background_A": "0.6",
+            "Stats_Text_R": "0.8",
+            "Stats_Text_G": "0.7",
+            "Stats_Text_B": "0.0",
+            "Stats_Text_A": "1.0",
+            "Stats_Pos_x": "0.0",
+            "Stats_Pos_y": "0.0"
+        }
     }
 )
-
 GENERAL_SETTINGS = SettingsManager(
     GENERAL_SETTINGS_FILE,
     {
@@ -3742,6 +3806,7 @@ class MenuManager:
         }
 
         self.open_menus = set()
+        self.toggle_buttons = {}
 
     def register_menu(self, menu_name: str, frame, button=None):
         self.menu_frames[menu_name] = frame
@@ -3840,6 +3905,51 @@ class MenuManager:
 
         self._update_button_icons()
 
+    # User Config Hise/Show Buttons
+    def register_toggle_button(self, button_name: str, button, frame, initial_state="hidden", parent=None):
+        self.toggle_buttons[button_name] = {
+            'button': button,
+            'frame': frame,
+            'state': initial_state,
+            'visible': initial_state == "shown",
+            'parent': parent
+        }
+        if initial_state == "hidden":
+            if frame and frame.winfo_exists():
+                frame.pack_forget()
+            if button and button.winfo_exists():
+                button.config(text="Show")
+        else:
+            if button and button.winfo_exists():
+                button.config(text="Hide")
+
+    def toggle_frame(self, button_name: str):
+        if button_name not in self.toggle_buttons:
+            return
+
+        toggle_data = self.toggle_buttons[button_name]
+        button = toggle_data['button']
+        frame = toggle_data['frame']
+        parent = toggle_data.get('parent')
+
+        if frame and frame.winfo_exists():
+            if frame.winfo_ismapped():
+                frame.pack_forget()
+                if button and button.winfo_exists():
+                    button.config(text="Show")
+                toggle_data['visible'] = False
+            else:
+                if parent and parent.winfo_exists():
+                    parent_parent = parent.nametowidget(parent.winfo_parent())
+                    children = parent_parent.winfo_children()
+                    idx = children.index(parent) if parent in children else len(children)
+                    frame.pack(fill="x", pady=5, after=parent)
+                else:
+                    frame.pack(fill="x", pady=5)
+                if button and button.winfo_exists():
+                    button.config(text="Hide")
+                toggle_data['visible'] = True
+
 # ------------------------------------------------------------
 class WatcherUI(tk.Tk):
     DARK_THEME = {
@@ -3892,6 +4002,12 @@ class WatcherUI(tk.Tk):
         self.mass_close_btn.config(bg=theme['button_bg'], fg=theme['fg'])
         self.stub_removal_btn.config(bg=theme['button_bg'], fg=theme['fg'])
         self.settings_btn.config(bg=theme['button_bg'], fg=theme['fg'])
+
+        if hasattr(self, 'user_config_show_btn') and self.user_config_show_btn.winfo_exists():
+            self.user_config_show_btn.config(bg=theme['button_bg'], fg=theme['fg'])
+        if hasattr(self, 'overlay_config_show_btn') and self.overlay_config_show_btn.winfo_exists():
+            self.overlay_config_show_btn.config(bg=theme['button_bg'], fg=theme['fg'])
+
         self.log_btn.config(bg=theme['button_bg'], fg=theme['fg'])
 
         self.style.configure('TNotebook', background=theme['bg'])
@@ -4528,81 +4644,156 @@ class WatcherUI(tk.Tk):
         self.user_tab = Frame(tablist, bg=theme['bg'])
         tablist.add(self.user_tab, text="User Config")
 
-        tab_separator = Frame(self.user_tab, height=2, bg=theme['border'])
+        canvas_frame = Frame(self.user_tab, bg=theme['bg'])
+        canvas_frame.pack(fill="both", expand=True, padx=0, pady=0)
+
+        container_canvas = Canvas(canvas_frame, bg=theme['bg'], borderwidth=0, highlightthickness=0)
+        scrollbar = Scrollbar(canvas_frame, orient="vertical", command=container_canvas.yview)
+        container_canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y", padx=(0, 0))
+        container_canvas.pack(side="left", fill="both", expand=True, padx=0, pady=0)
+
+        user_container = Frame(container_canvas, bg=theme['bg'])
+        canvas_window = container_canvas.create_window((0, 0), window=user_container, anchor="nw")
+
+        def _configure_user_container(event):
+            container_canvas.configure(scrollregion=container_canvas.bbox("all"))
+
+        user_container.bind("<Configure>", _configure_user_container)
+
+        def _configure_user_canvas(event):
+            canvas_width = event.width
+            container_canvas.itemconfig(canvas_window, width=canvas_width)
+
+        container_canvas.bind("<Configure>", _configure_user_canvas)
+
+        tab_separator = Frame(user_container, height=2, bg=theme['border'])
         tab_separator.pack(fill="x", pady=(0, 10))
 
-        settings_container = Frame(self.user_tab, bg=theme['bg'])
+        settings_container = Frame(user_container, bg=theme['bg'])
         settings_container.pack(pady=10, padx=20, fill="x")
 
+        # ===== Account CONFIG =====
         enable_frame = Frame(settings_container, bg=theme['bg'])
         enable_frame.pack(fill="x", pady=5)
         self.enable_var = tk.BooleanVar(value=self.user_config.get("enabled", False))
         Checkbutton(
             enable_frame,
-            text="Enable User Config",
+            text="Enable Account Config",
             variable=self.enable_var,
-            command=self._toggle_config_fields,
+            command=lambda: self.toggle_user_config_fields("user"),
             bg=theme['bg'],
             fg=theme['fg'],
             activebackground=theme['bg'],
             activeforeground=theme['fg'],
             selectcolor=theme['widget_bg']
-        ).pack(anchor="w")
+        ).pack(side="left", anchor="w")
+
+        self.user_config_show_btn = Button(
+            enable_frame,
+            text="Show",
+            command=lambda: self.menu_manager.toggle_frame('user_config_fields'),
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            bd=0,
+            relief='flat'
+        )
+        self.user_config_show_btn.pack(side="right")
 
         self.fields_frame = Frame(settings_container, bg=theme['bg'])
         self.fields_frame.pack(fill="x", pady=10)
+        if not self.enable_var.get():
+            self.fields_frame.pack_forget()
 
         account_frame = Frame(self.fields_frame, bg=theme['bg'])
         account_frame.pack(fill="x", pady=5)
-        Label(account_frame, text="Account Name:", bg=theme['bg'], fg=theme['fg'], width=12, anchor="e").pack(side="left", padx=(0, 10))
+        Label(
+            account_frame,
+            text="Account Name:",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            width=12,
+            anchor="e"
+        ).pack(side="left", padx=(0, 10))
         self.account_var = tk.StringVar(value=self.user_config.get("account_name"))
         self.account_entry = Entry(
-            account_frame, 
+            account_frame,
             textvariable=self.account_var,
             width=30,
             bg=theme['widget_bg'],
             fg=theme['fg']
         )
         self.account_entry.pack(side="left", fill="x", expand=True)
-        self.account_entry.bind("<KeyRelease>", lambda e: self._save_config("account_name", self.account_var.get()))
+        self.account_entry.bind(
+            "<KeyRelease>",
+            lambda e: self._save_user_config("account_name", self.account_var.get())
+        )
 
         steamid_frame = Frame(self.fields_frame, bg=theme['bg'])
         steamid_frame.pack(fill="x", pady=5)
-        Label(steamid_frame, text="SteamID:", bg=theme['bg'], fg=theme['fg'], width=12, anchor="e").pack(side="left", padx=(0, 10))
+        Label(
+            steamid_frame,
+            text="SteamID:",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            width=12,
+            anchor="e"
+        ).pack(side="left", padx=(0, 10))
         current_steamid = self.user_config.get("steamid")
-
         if not current_steamid:
             current_steamid = "76561197960287930"
             self.user_config.set("steamid", current_steamid)
-            
         self.steamid_var = tk.StringVar(value=current_steamid)
         self.steamid_entry = Entry(
-            steamid_frame, 
+            steamid_frame,
             textvariable=self.steamid_var,
             width=30,
             bg=theme['widget_bg'],
             fg=theme['fg']
         )
         self.steamid_entry.pack(side="left", fill="x", expand=True)
-        self.steamid_entry.bind("<KeyRelease>", lambda e: self._save_config("steamid", self.steamid_var.get()))
+        self.steamid_entry.bind(
+            "<KeyRelease>",
+            lambda e: self._save_user_config("steamid", self.steamid_var.get())
+        )
 
         lang_frame = Frame(self.fields_frame, bg=theme['bg'])
         lang_frame.pack(fill="x", pady=5)
-        Label(lang_frame, text="Language:", bg=theme['bg'], fg=theme['fg'], width=12, anchor="e").pack(side="left", padx=(0, 10))
+        Label(
+            lang_frame,
+            text="Language:",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            width=12,
+            anchor="e"
+        ).pack(side="left", padx=(0, 10))
         self.lang_var = tk.StringVar(value=self.user_config.get("language"))
         lang_dropdown = ttk.Combobox(
             lang_frame,
             textvariable=self.lang_var,
-            values=["English", "French", "German", "Spanish", "Russian", "Japanese", "Chinese", "Korean", "Portuguese"],
+            values=[
+                "English", "French", "German", "Spanish",
+                "Russian", "Japanese", "Chinese", "Korean", "Portuguese"
+            ],
             state="readonly",
             width=27
         )
         lang_dropdown.pack(side="left")
-        lang_dropdown.bind("<<ComboboxSelected>>", lambda e: self._save_config("language", self.lang_var.get()))
+        lang_dropdown.bind(
+            "<<ComboboxSelected>>",
+            lambda e: self._save_user_config("language", self.lang_var.get())
+        )
 
         country_frame = Frame(self.fields_frame, bg=theme['bg'])
         country_frame.pack(fill="x", pady=5)
-        Label(country_frame, text="Country:", bg=theme['bg'], fg=theme['fg'], width=12, anchor="e").pack(side="left", padx=(0, 10))
+        Label(
+            country_frame,
+            text="Country:",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            width=12,
+            anchor="e"
+        ).pack(side="left", padx=(0, 10))
         self.country_var = tk.StringVar(value=self.user_config.get("country"))
         country_dropdown = ttk.Combobox(
             country_frame,
@@ -4612,9 +4803,124 @@ class WatcherUI(tk.Tk):
             width=5
         )
         country_dropdown.pack(side="left")
-        country_dropdown.bind("<<ComboboxSelected>>", lambda e: self._save_config("country", self.country_var.get()))
+        country_dropdown.bind(
+            "<<ComboboxSelected>>",
+            lambda e: self._save_user_config("country", self.country_var.get())
+        )
 
-        self._toggle_config_fields()
+        self.toggle_user_config_fields("user")
+
+        # Register the user config fields with MenuManager
+        self.menu_manager.register_toggle_button('user_config_fields', self.user_config_show_btn, self.fields_frame, "hidden", enable_frame)
+
+        # ===== SAVE CONFIG =====
+        save_config_separator = Frame(settings_container, height=2, bg=theme['border'])
+        save_config_separator.pack(fill="x", pady=(10, 10))
+
+        saves_enable_frame = Frame(settings_container, bg=theme['bg'])
+        saves_enable_frame.pack(fill="x", pady=5)
+        self.saves_enable_var = tk.BooleanVar(value=self.user_config.get("saves_enabled", False))
+        Checkbutton(
+            saves_enable_frame,
+            text="Enable Save Config",
+            variable=self.saves_enable_var,
+            command=lambda: self.toggle_user_config_fields("saves"),
+            bg=theme['bg'],
+            fg=theme['fg'],
+            activebackground=theme['bg'],
+            activeforeground=theme['fg'],
+            selectcolor=theme['widget_bg']
+        ).pack(side="left", anchor="w")
+
+        self.saves_config_show_btn = Button(
+            saves_enable_frame,
+            text="Show",
+            command=lambda: self.menu_manager.toggle_frame('saves_config_fields'),
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            bd=0,
+            relief='flat'
+        )
+        self.saves_config_show_btn.pack(side="right")
+
+        self.saves_fields_frame = Frame(settings_container, bg=theme['bg'])
+        self.saves_fields_frame.pack(fill="x", pady=10)
+        if not self.saves_enable_var.get():
+            self.saves_fields_frame.pack_forget()
+
+        # Register with MenuManager
+        self.menu_manager.register_toggle_button('saves_config_fields', self.saves_config_show_btn, self.saves_fields_frame, "hidden", saves_enable_frame)
+
+        save_location_frame = Frame(self.saves_fields_frame, bg=theme['bg'])
+        save_location_frame.pack(fill="x", pady=5)
+        Label(save_location_frame, text="Save Location:", bg=theme['bg'], fg=theme['fg'], width=12, anchor="e").pack(side="left", padx=(0, 10))
+        self.save_location_var = tk.StringVar(value=self.user_config.get("local_save_path", ""))
+        self.save_location_entry = Entry(
+            save_location_frame,
+            textvariable=self.save_location_var,
+            width=30,
+            bg=theme['widget_bg'],
+            fg=theme['fg']
+        )
+        self.save_location_entry.pack(side="left", fill="x", expand=True)
+        self.save_location_entry.bind("<KeyRelease>", lambda e: self._save_user_config("local_save_path", self.save_location_var.get()))
+
+        save_folder_frame = Frame(self.saves_fields_frame, bg=theme['bg'])
+        save_folder_frame.pack(fill="x", pady=5)
+        Label(save_folder_frame, text="Save Folder:", bg=theme['bg'], fg=theme['fg'], width=12, anchor="e").pack(side="left", padx=(0, 10))
+        self.save_folder_var = tk.StringVar(value=self.user_config.get("saves_folder_name", "GSE Saves"))
+        self.save_folder_entry = Entry(
+            save_folder_frame,
+            textvariable=self.save_folder_var,
+            width=30,
+            bg=theme['widget_bg'],
+            fg=theme['fg']
+        )
+        self.save_folder_entry.pack(side="left", fill="x", expand=True)
+        self.save_folder_entry.bind("<KeyRelease>", lambda e: self._save_user_config("saves_folder_name", self.save_folder_var.get()))
+
+        self.toggle_user_config_fields("saves")
+
+        # ===== Overlay CONFIG =====
+        overlay_separator = Frame(settings_container, height=2, bg=theme['border'])
+        overlay_separator.pack(fill="x", pady=(10, 10))
+
+        overlay_enable_frame = Frame(settings_container, bg=theme['bg'])
+        overlay_enable_frame.pack(fill="x", pady=5)
+        self.overlay_enable_var = tk.BooleanVar(value=self.user_config.get("overlay_enabled", False))
+        Checkbutton(
+            overlay_enable_frame,
+            text="Enable Overlay Config",
+            variable=self.overlay_enable_var,
+            command=lambda: self.toggle_user_config_fields("overlay"),
+            bg=theme['bg'],
+            fg=theme['fg'],
+            activebackground=theme['bg'],
+            activeforeground=theme['fg'],
+            selectcolor=theme['widget_bg']
+        ).pack(side="left", anchor="w")
+
+        self.overlay_config_show_btn = Button(
+            overlay_enable_frame,
+            text="Show",
+            command=lambda: self.menu_manager.toggle_frame('overlay_config_fields'),
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            bd=0,
+            relief='flat'
+        )
+        self.overlay_config_show_btn.pack(side="right")
+
+        self.overlay_fields_frame = Frame(settings_container, bg=theme['bg'])
+
+        # Register overlay config fields with MenuManager
+        self.menu_manager.register_toggle_button('overlay_config_fields', self.overlay_config_show_btn, self.overlay_fields_frame, "hidden", overlay_enable_frame)
+
+        if not self.overlay_config_forms_created:
+            self._create_overlay_config_forms()
+            self.overlay_config_forms_created = True
+
+        self.toggle_user_config_fields()
         self.settings_btn.lift()
 
     def downgrader(self, target: str = "app"):
@@ -4707,53 +5013,403 @@ class WatcherUI(tk.Tk):
             except Exception as e:
                 show_custom_dialog(self, "error", "Downgrade Failed", str(e))
 
-    def _update_user_ini(self):
-        ini_path = EXTRA_FOLDER / "configs.user.ini"
-    
-        if self.user_config.get("enabled", False):    
-            lines = ["[user::general]"]
-        
-            if self.user_config.get("account_name"):
-                lines.append(f"account_name={self.user_config.get('account_name')}")
-            if self.user_config.get("steamid"):
-                lines.append(f"account_steamid={self.user_config.get('steamid')}")
-            language = self.user_config.get("language")
-            if language:
-                lines.append(f"language={language.lower()}")
-            if self.user_config.get("country"):
-                lines.append(f"ip_country={self.user_config.get('country')}")
-        
-            if len(lines) > 1:
-                ini_path.write_text("\n".join(lines), encoding="utf-8")
-            elif ini_path.exists():
-                ini_path.unlink()
+
+    def toggle_user_config_fields(self, config_type="user"):
+        if config_type == "user":
+            frame = self.fields_frame
+            enable_var = self.enable_var
+            config_key = "enabled"
+        elif config_type == "saves":
+            frame = self.saves_fields_frame
+            enable_var = self.saves_enable_var
+            config_key = "saves_enabled"
         else:
-            if ini_path.exists():
-                try:
-                    ini_path.unlink()
-                except Exception as e:
-                    print(f"Error removing user config: {e}")
+            frame = self.overlay_fields_frame
+            enable_var = self.overlay_enable_var
+            config_key = "overlay_enabled"
 
-    def _toggle_config_fields(self):
-        state = "normal" if self.enable_var.get() else "disabled"
-        
-        for child in self.fields_frame.winfo_children():
-            for widget in child.winfo_children():
-                if isinstance(widget, (Entry, ttk.Combobox)):
-                    widget.configure(state=state)
-        
-        self.user_config.set("enabled", self.enable_var.get())
-        self._update_user_ini()
+        state = "normal" if enable_var.get() else "disabled"
 
-    def _save_config(self, key, value):
+        self.user_config.set(config_key, enable_var.get())
+        self._update_user_config_ini_files(config_type)
+
+        # Enable/disable all widgets in the frame
+        def enable_disable_widgets(f):
+            for child in f.winfo_children():
+                if isinstance(child, Frame):
+                    enable_disable_widgets(child)
+                elif isinstance(child, (Entry, ttk.Combobox, Checkbutton, Button)):
+                    child.configure(state=state)
+
+            if frame and frame.winfo_exists():
+                enable_disable_widgets(frame)
+
+    def _save_user_config(self, key, value):
         self.user_config.set(key, value)
-        
-        if key != "enabled" and value and not self.enable_var.get():
-            self.enable_var.set(True)
-            self._toggle_config_fields()
 
-        if self.user_config.get("enabled", False):
-            self._update_user_ini()
+        if key in ("account_name", "steamid", "language", "country") and value and not self.enable_var.get():
+            self.enable_var.set(True)
+            self.toggle_user_config_fields("user")
+
+        if key in ("local_save_path", "saves_folder_name") and value and not self.saves_enable_var.get():
+            self.saves_enable_var.set(True)
+            self.toggle_user_config_fields("saves")
+
+        if key in ("enabled", "account_name", "steamid", "language", "country",
+                   "saves_enabled", "local_save_path", "saves_folder_name"):
+            self._update_user_config_ini_files()
+
+        if key.startswith("overlay_") or key in ["Font_Override", "Font_Size", "Icon_Size"]:
+            if self.overlay_enable_var.get():
+                self._update_user_config_ini_files("overlay")
+
+    def _create_overlay_config_forms(self):
+        theme = self.DARK_THEME if self.dark_mode and not self.custom_theme else (self.custom_theme if self.custom_theme else self.LIGHT_THEME)
+
+        if not hasattr(self, 'overlay_vars'):
+            self.overlay_vars = {}
+
+        general_label = Label(
+            self.overlay_fields_frame,
+            text="General",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 14, "bold")
+        )
+        general_label.pack(pady=10)
+
+        separator = Frame(self.overlay_fields_frame, height=2, bg=theme['border'])
+        separator.pack(fill="x", pady=(0, 10))
+
+        general_container = Frame(self.overlay_fields_frame, bg=theme['bg'])
+        general_container.pack(fill="x", pady=5)
+
+        left_frame = Frame(general_container, bg=theme['bg'])
+        left_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
+
+        right_frame = Frame(general_container, bg=theme['bg'])
+        right_frame.pack(side="right", fill="both", expand=True, padx=(5, 0))
+
+        def _create_setting_row(parent, key, display_name, field_type, options=None):
+            frame = Frame(parent, bg=theme['bg'])
+            frame.pack(fill="x", pady=2)
+
+            label = Label(
+                frame,
+                text=display_name + ":",
+                bg=theme['bg'],
+                fg=theme['fg'],
+                width=25,
+                anchor="e"
+            )
+            label.pack(side="left", padx=(0, 10))
+
+            default_value = self.user_config.get("overlay_settings", {}).get(key, "0" if field_type == "checkbox" else "")
+
+            if field_type == "checkbox":
+                var = tk.BooleanVar(value=default_value == "1")
+                cb = Checkbutton(
+                    frame,
+                    variable=var,
+                    bg=theme['bg'],
+                    fg=theme['fg'],
+                    activebackground=theme['bg'],
+                    activeforeground=theme['fg'],
+                    selectcolor=theme['widget_bg']
+                )
+                cb.pack(side="left")
+                var.trace_add("write", lambda *args, k=key, v=var: (self.user_config.get("overlay_settings", {}).__setitem__(k, "1" if v.get() else "0"), self._update_user_config_ini_files("overlay")))
+            elif field_type == "combobox":
+                var = tk.StringVar(value=default_value)
+                cb = ttk.Combobox(
+                    frame,
+                    textvariable=var,
+                    values=options,
+                    state="readonly",
+                    width=15
+                )
+                cb.pack(side="left")
+                var.trace_add("write", lambda *args, k=key, v=var: (self.user_config.get("overlay_settings", {}).__setitem__(k, v.get()), self._update_user_config_ini_files("overlay")))
+            else:
+                var = tk.StringVar(value=default_value)
+                entry = Entry(
+                    frame,
+                    textvariable=var,
+                    width=10,
+                    bg=theme['widget_bg'],
+                    fg=theme['fg']
+                )
+                entry.pack(side="left")
+                var.trace_add("write", lambda *args, k=key, v=var: (self.user_config.get("overlay_settings", {}).__setitem__(k, v.get()), self._update_user_config_ini_files("overlay")))
+
+            self.overlay_vars[key] = var
+
+        general_settings_left = [
+            ("enable_experimental_overlay", "Enable Experimental Overlay", "checkbox"),
+            ("hook_delay_sec", "Hook Delay Sec", "entry"),
+            ("renderer_detector_timeout_sec", "Renderer Detector Timeout Sec", "entry"),
+            ("disable_achievement_notification", "Disable Achievement Notification", "checkbox"),
+            ("disable_friend_notification", "Disable Friend Notification", "checkbox"),
+            ("disable_achievement_progress", "Disable Achievement Progress", "checkbox"),
+            ("disable_warning_any", "Disable Warning Any", "checkbox"),
+            ("disable_warning_bad_appid", "Disable Warning Bad Appid", "checkbox"),
+        ]
+
+        general_settings_right = [
+            ("disable_warning_local_save", "Disable Warning Local Save", "checkbox"),
+            ("upload_achievements_icons_to_gpu", "Upload Achievements Icons To GPU", "checkbox"),
+            ("fps_averaging_window", "FPS Averaging Window", "entry"),
+            ("overlay_always_show_user_info", "Overlay Always Show User Info", "checkbox"),
+            ("overlay_always_show_fps", "Overlay Always Show FPS", "checkbox"),
+            ("overlay_always_show_frametime", "Overlay Always Show Frametime", "checkbox"),
+            ("overlay_always_show_playtime", "Overlay Always Show Playtime", "checkbox"),
+        ]
+
+        for key, display_name, field_type in general_settings_left:
+            _create_setting_row(left_frame, key, display_name, field_type)
+
+        for key, display_name, field_type in general_settings_right:
+            _create_setting_row(right_frame, key, display_name, field_type)
+
+        appearance_label = Label(
+            self.overlay_fields_frame,
+            text="Appearance",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 14, "bold")
+        )
+        appearance_label.pack(pady=10)
+
+        separator = Frame(self.overlay_fields_frame, height=2, bg=theme['border'])
+        separator.pack(fill="x", pady=(0, 10))
+
+        appearance_container = Frame(self.overlay_fields_frame, bg=theme['bg'])
+        appearance_container.pack(fill="x", pady=5)
+
+        app_left_frame = Frame(appearance_container, bg=theme['bg'])
+        app_left_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
+
+        app_right_frame = Frame(appearance_container, bg=theme['bg'])
+        app_right_frame.pack(side="right", fill="both", expand=True, padx=(5, 0))
+
+        font_frame = Frame(app_left_frame, bg=theme['bg'])
+        font_frame.pack(fill="x", pady=2)
+
+        font_label = Label(
+            font_frame,
+            text="Font Override:",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            width=25,
+            anchor="e"
+        )
+        font_label.pack(side="left", padx=(0, 10))
+
+        default_font = self.user_config.get("overlay_settings", {}).get("Font_Override", "Roboto-Medium.ttf")
+        self.font_override_var = tk.StringVar(value=default_font)
+
+        self.font_override_entry = Entry(
+            font_frame,
+            textvariable=self.font_override_var,
+            width=20,
+            bg=theme['widget_bg'],
+            fg=theme['fg']
+        )
+        self.font_override_entry.pack(side="left", padx=(0, 5))
+
+        browse_btn = Button(
+            font_frame,
+            text="Browse",
+            command=self._browse_font,
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            bd=0,
+            relief='flat'
+        )
+        browse_btn.pack(side="left")
+        self.font_override_var.trace_add("write", lambda *args: (
+            self.user_config.get("overlay_settings", {}).__setitem__("Font_Override", self.font_override_var.get()), self._update_user_config_ini_files("overlay")))
+
+        appearance_settings_left = [
+            ("Font_Size", "Font Size", "entry"),
+            ("Icon_Size", "Icon Size", "entry"),
+            ("Font_Glyph_Extra_Spacing_x", "Font Glyph Extra Spacing X", "entry"),
+            ("Font_Glyph_Extra_Spacing_y", "Font Glyph Extra Spacing Y", "entry"),
+            ("Notification_R", "Notification R", "entry"),
+            ("Notification_G", "Notification G", "entry"),
+            ("Notification_B", "Notification B", "entry"),
+            ("Notification_A", "Notification A", "entry"),
+            ("Notification_Rounding", "Notification Rounding", "entry"),
+            ("Notification_Margin_x", "Notification Margin X", "entry"),
+            ("Notification_Margin_y", "Notification Margin Y", "entry"),
+            ("Notification_Animation", "Notification Animation", "entry"),
+            ("Notification_Duration_Progress", "Notification Duration Progress", "entry"),
+            ("Notification_Duration_Achievement", "Notification Duration Achievement", "entry"),
+            ("PosAchievement", "Pos Achievement", "combobox", ["top_left", "top_center", "top_right", "bot_left", "bot_center", "bot_right"]),
+            ("PosInvitation", "Pos Invitation", "combobox", ["top_left", "top_center", "top_right", "bot_left", "bot_center", "bot_right"]),
+            ("PosChatMsg", "Pos Chat Msg", "combobox", ["top_left", "top_center", "top_right", "bot_left", "bot_center", "bot_right"]),
+            ("Achievement_Unlock_Datetime_Format", "Achievement Unlock Datetime Format", "entry"),
+            ("Background_R", "Background R", "entry"),
+            ("Background_G", "Background G", "entry"),
+            ("Background_B", "Background B", "entry"),
+            ("Background_A", "Background A", "entry"),
+            ("Element_R", "Element R", "entry"),
+        ]
+
+        appearance_settings_right = [
+            ("Element_G", "Element G", "entry"),
+            ("Element_B", "Element B", "entry"),
+            ("Element_A", "Element A", "entry"),
+            ("ElementHovered_R", "Element Hovered R", "entry"),
+            ("ElementHovered_G", "Element Hovered G", "entry"),
+            ("ElementHovered_B", "Element Hovered B", "entry"),
+            ("ElementHovered_A", "Element Hovered A", "entry"),
+            ("ElementActive_R", "Element Active R", "entry"),
+            ("ElementActive_G", "Element Active G", "entry"),
+            ("ElementActive_B", "Element Active B", "entry"),
+            ("ElementActive_A", "Element Active A", "entry"),
+            ("Stats_Background_R", "Stats Background R", "entry"),
+            ("Stats_Background_G", "Stats Background G", "entry"),
+            ("Stats_Background_B", "Stats Background B", "entry"),
+            ("Stats_Background_A", "Stats Background A", "entry"),
+            ("Notification_Duration_Invitation", "Notification Duration Invitation", "entry"),
+            ("Notification_Duration_Chat", "Notification Duration Chat", "entry"),
+            ("Stats_Text_R", "Stats Text R", "entry"),
+            ("Stats_Text_G", "Stats Text G", "entry"),
+            ("Stats_Text_B", "Stats Text B", "entry"),
+            ("Stats_Text_A", "Stats Text A", "entry"),
+            ("Stats_Pos_x", "Stats Pos X", "entry"),
+            ("Stats_Pos_y", "Stats Pos Y", "entry"),
+        ]
+
+        for item in appearance_settings_left:
+            if len(item) == 4:
+                key, display_name, field_type, options = item
+            else:
+                key, display_name, field_type = item
+                options = None
+            _create_setting_row(app_left_frame, key, display_name, field_type, options)
+
+        for key, display_name, field_type in appearance_settings_right:
+            _create_setting_row(app_right_frame, key, display_name, field_type)
+
+    def _browse_font(self):
+        font_file = filedialog.askopenfilename(
+            title="Select Font File",
+            filetypes=[("TrueType Fonts", "*.ttf"), ("All Files", "*.*")]
+        )
+
+        if font_file:
+            try:
+                fonts_dir = EXTRA_FOLDER / "fonts"
+                fonts_dir.mkdir(parents=True, exist_ok=True)
+
+                # Copy font file
+                font_name = Path(font_file).name
+                dest_path = fonts_dir / font_name
+                shutil.copy2(font_file, dest_path)
+
+                # Update the font override setting
+                self.font_override_var.set(font_name)
+                self._update_user_config_ini_files("Font_Override", font_name)
+
+                log_manager.log_message(f"Font copied to {dest_path}")
+            except Exception as e:
+                log_manager.log_error(e, "_browse_font")
+                messagebox.showerror("Error", f"Failed to copy font: {e}")
+
+    def _update_user_config_ini_files(self, config_type="all"):
+        # ===== USER CONFIG =====
+        user_ini_path = EXTRA_FOLDER / "configs.user.ini"
+
+        # Check enable states for BOTH account and saves
+        user_enabled = self.user_config.get("enabled", False)
+        saves_enabled = self.user_config.get("saves_enabled", False)
+
+        lines = []
+        if not user_enabled and not saves_enabled:
+            if user_ini_path.exists():
+                try:
+                    user_ini_path.unlink()
+                except Exception as e:
+                    log_manager.log_error(Exception(f"Error removing user config: {e}"), "_update_user_config_ini_files")
+        else:
+            if user_enabled:
+                lines.append("[user::general]")
+                if self.user_config.get("account_name"):
+                    lines.append(f"account_name={self.user_config.get('account_name')}")
+                if self.user_config.get("steamid"):
+                    lines.append(f"account_steamid={self.user_config.get('steamid')}")
+                language = self.user_config.get("language")
+                if language:
+                    lines.append(f"language={language.lower()}")
+                if self.user_config.get("country"):
+                    lines.append(f"ip_country={self.user_config.get('country')}")
+
+            if saves_enabled:
+                if lines:
+                    lines.append("")
+                lines.append("[user::saves]")
+                if self.user_config.get("local_save_path"):
+                    lines.append(f"local_save_path={self.user_config.get('local_save_path')}")
+                if self.user_config.get("saves_folder_name"):
+                    lines.append(f"saves_folder_name={self.user_config.get('saves_folder_name')}")
+
+        if lines:
+            user_ini_path.write_text("\n".join(lines), encoding="utf-8")
+
+        # ===== OVERLAY CONFIG =====
+        if config_type in ("overlay", "all") and hasattr(self, 'overlay_enable_var'):
+            overlay_ini_path = EXTRA_FOLDER / "configs.overlay.ini"
+            if self.overlay_enable_var.get():
+                overlay_settings = self.user_config.get("overlay_settings", {})
+
+                lines = []
+                lines.append("[overlay::general]")
+                general_keys = [
+                    "enable_experimental_overlay", "hook_delay_sec", "renderer_detector_timeout_sec",
+                    "disable_achievement_notification", "disable_friend_notification",
+                    "disable_achievement_progress", "disable_warning_any", "disable_warning_bad_appid",
+                    "disable_warning_local_save", "upload_achievements_icons_to_gpu",
+                    "fps_averaging_window", "overlay_always_show_user_info", "overlay_always_show_fps",
+                    "overlay_always_show_frametime", "overlay_always_show_playtime"
+                ]
+                for key in general_keys:
+                    if key in overlay_settings:
+                        lines.append(f"{key}={overlay_settings[key]}")
+
+                lines.append("")
+                lines.append("[overlay::appearance]")
+                appearance_keys = [
+                    "Font_Override", "Font_Size", "Icon_Size", "Font_Glyph_Extra_Spacing_x",
+                    "Font_Glyph_Extra_Spacing_y", "Notification_R", "Notification_G", "Notification_B",
+                    "Notification_A", "Notification_Rounding", "Notification_Margin_x", "Notification_Margin_y",
+                    "Notification_Animation", "Notification_Duration_Progress", "Notification_Duration_Achievement",
+                    "Notification_Duration_Invitation", "Notification_Duration_Chat",
+                    "Achievement_Unlock_Datetime_Format", "Background_R", "Background_G", "Background_B",
+                    "Background_A", "Element_R", "Element_G", "Element_B", "Element_A",
+                    "ElementHovered_R", "ElementHovered_G", "ElementHovered_B", "ElementHovered_A",
+                    "ElementActive_R", "ElementActive_G", "ElementActive_B", "ElementActive_A",
+                    "PosAchievement", "PosInvitation", "PosChatMsg", "Stats_Background_R",
+                    "Stats_Background_G", "Stats_Background_B", "Stats_Background_A", "Stats_Text_R",
+                    "Stats_Text_G", "Stats_Text_B", "Stats_Text_A", "Stats_Pos_x", "Stats_Pos_y"
+                ]
+                for key in appearance_keys:
+                    if key in overlay_settings:
+                        lines.append(f"{key}={overlay_settings[key]}")
+
+                try:
+                    overlay_ini_path.write_text("\n".join(lines), encoding="utf-8")
+                    log_manager.log_message(f"Updated overlay config: {overlay_ini_path}")
+                except Exception as e:
+                    log_manager.log_error(e, "_update_user_config_ini_files")
+            else:
+                if overlay_ini_path.exists():
+                    try:
+                        overlay_ini_path.unlink()
+                    except Exception as e:
+                        log_manager.log_error(e, "_update_user_config_ini_files (removing overlay)")
+
 
     def __init__(self, file_queue: queue.Queue):
         super().__init__()
@@ -4977,6 +5633,9 @@ class WatcherUI(tk.Tk):
         self.inner_frame.grid_rowconfigure(len(all_html_files), minsize=5)
 
         self.inner_frame.bind("<Configure>", self._update_scroll_region)
+
+        self.overlay_config_forms_created = False
+        self.overlay_vars = {}
 
         self.user_settings = USER_SETTINGS
         self.general_settings = GENERAL_SETTINGS
