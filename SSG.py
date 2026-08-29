@@ -142,7 +142,7 @@ def _gui_yes_no(question: str) -> bool:
         root.withdraw()
         root.attributes("-topmost", True)
         root.update()
-        result = messagebox.askyesno("Confirm", question, parent=root)
+        result = show_custom_dialog(root, "yesno", "Confirm", question)
         root.destroy()
         return result
     except Exception:
@@ -334,6 +334,7 @@ DOWNLOADS_FOLDER.mkdir(parents=True, exist_ok=True)
 TEMP_FOLDER = APP_FOLDER / "temp"
 TEMP_FOLDER.mkdir(parents=True, exist_ok=True)
 #-------------------------------------------------------------
+AVATAR_SIZE = 184
 EXTRA_FOLDER = pathlib.Path(__file__).resolve().parent / "Extra"
 EXTRA_FOLDER.mkdir(parents=True, exist_ok=True)
 #-------------------------------------------------------------
@@ -781,21 +782,16 @@ def check_for_updates(manual=False, target='app'):
                 cfg["version_file"].write_text(latest_tag, encoding="utf-8")
 
                 if manual:
-                    messagebox.showinfo(
-                        f"{cfg['success_msg']} Update Complete",
-                        f"{cfg['success_msg']} files updated!"
-                    )
+                    messagebox.showinfo(global_ui if global_ui is not None else self, "info", f"{cfg['success_msg']} Update Complete", f"{cfg['success_msg']} files updated!")
             else:
                 log_manager.log_message(f"{cfg['success_msg']} update canceled by user")
         else:
             if manual:
                 msg = f"You have the latest {cfg['success_msg']} version"
                 if global_ui is not None:
-                    global_ui.after(0, lambda: messagebox.showinfo(
-                        f"{cfg['success_msg']} Update Check", msg
-                    ))
+                    global_ui.after(0, lambda: show_custom_dialog(global_ui, "info", f"{cfg['success_msg']} Update Check", msg))
                 else:
-                    messagebox.showinfo(f"{cfg['success_msg']} Update Check", msg)
+                    show_custom_dialog(self, "info", f"{cfg['success_msg']} Update Check", msg)
             else:
                 log_manager.log_message(f"You have the latest {cfg['success_msg']} version")
 
@@ -804,11 +800,9 @@ def check_for_updates(manual=False, target='app'):
         if manual:
             error_msg = f"Failed to update {cfg['success_msg']}: {str(e)}"
             if global_ui is not None:
-                global_ui.after(0, lambda: messagebox.showerror(
-                    f"{cfg['success_msg']} Update Error", error_msg
-                ))
+                global_ui.after(0, lambda: show_custom_dialog(global_ui, "error", f"{cfg['success_msg']} Update Error", error_msg))
             else:
-                messagebox.showerror(f"{cfg['success_msg']} Update Error", error_msg)
+                show_custom_dialog(self, "error", f"{cfg['success_msg']} Update Error", error_msg)
 
 def restart_application():
     python = sys.executable
@@ -1683,6 +1677,8 @@ class SettingsManager:
 USER_SETTINGS = SettingsManager(
     USER_CONFIG_FILE,
     {
+        "avatar_enabled": False,
+        "avatar_custom": False,
         "enabled": False,
         "account_name": "",
         "steamid": "76561197960287930",
@@ -1752,6 +1748,40 @@ USER_SETTINGS = SettingsManager(
             "Stats_Text_A": "1.0",
             "Stats_Pos_x": "0.0",
             "Stats_Pos_y": "0.0"
+        },
+        "main_enabled": False,
+        "main_settings": {
+            "new_app_ticket": "1",
+            "gc_token": "1",
+            "block_unknown_clients": "0",
+            "steam_deck": "0",
+            "enable_account_avatar": "0",
+            "enable_voice_chat": "0",
+            "immediate_gameserver_stats": "0",
+            "matchmaking_server_list_actual_type": "0",
+            "matchmaking_server_details_via_source_query": "0",
+            "crash_printer_location": "",
+            "disable_leaderboards_create_unknown": "0",
+            "allow_unknown_stats": "0",
+            "stat_achievement_progress_functionality": "1",
+            "save_only_higher_stat_achievement_progress": "1",
+            "paginated_achievements_icons": "10",
+            "record_playtime": "0",
+            "disable_lan_only": "0",
+            "disable_networking": "0",
+            "listen_port": "47584",
+            "offline": "0",
+            "disable_sharing_stats_with_gameserver": "0",
+            "disable_source_query": "0",
+            "share_leaderboards_over_network": "0",
+            "disable_lobby_creation": "0",
+            "download_steamhttp_requests": "0",
+            "achievements_bypass": "0",
+            "force_steamhttp_success": "0",
+            "disable_steamoverlaygameid_env_var": "0",
+            "enable_steam_preowned_ids": "0",
+            "steam_game_stats_reports_dir": "",
+            "free_weekend": "0"
         }
     }
 )
@@ -2446,6 +2476,261 @@ class VersionDropdownHelper:
         return self.var.get() if self.var else None
 
 # ------------------------------------------------------------
+class DraggableList:
+    def __init__(self, parent, config_type, file_path, user_config, theme, on_update_callback):
+        self.parent = parent
+        self.config_type = config_type
+        self.file_path = file_path
+        self.user_config = user_config
+        self.theme = theme
+        self.on_update_callback = on_update_callback
+        self.frame = Frame(parent, bg=theme['bg'])
+        self.frame.pack(fill="both", expand=True, pady=5)
+
+        self.entry_frame = Frame(self.frame, bg=theme['bg'])
+        self.entry_frame.pack(fill="x", pady=(0, 10))
+        
+        self.entry_var = tk.StringVar()
+        self.entry = Entry(
+            self.entry_frame,
+            textvariable=self.entry_var,
+            bg=theme['widget_bg'],
+            fg=theme['fg']
+        )
+        self.entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        self.entry.bind("<Return>", self._on_add)
+        self.entry.bind("<KeyRelease>", lambda e: self._validate_input())
+        
+        self.add_btn = Button(
+            self.entry_frame,
+            text="+",
+            command=self._on_add,
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            bd=0,
+            relief='flat',
+            width=3
+        )
+        self.add_btn.pack(side="left")
+
+        self.list_frame = Frame(self.frame, bg=theme['bg'])
+        self.list_frame.pack(fill="both", expand=True)
+
+        self.canvas = Canvas(self.list_frame, bg=theme['bg'], borderwidth=0, highlightthickness=0)
+        self.scrollbar = Scrollbar(self.list_frame, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        self.items_frame = Frame(self.canvas, bg=theme['bg'])
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.items_frame, anchor="nw")
+
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+        self.items_frame.bind("<Configure>", self._on_items_configure)
+
+        self.items = []
+        self.item_frames = []
+        self.drag_data = {"x": 0, "y": 0, "item": None, "frame": None, "target_idx": None}
+
+        self.drag_feedback = None
+
+        self.canvas.bind("<ButtonPress-1>", self._on_press)
+        self.canvas.bind("<B1-Motion>", self._on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._on_release)
+
+        self._load_items()
+
+    def _validate_input(self):
+        text = self.entry_var.get()
+        if self.config_type == "invite":
+            if text and not text.isdigit():
+                self.entry_var.set(''.join(c for c in text if c.isdigit()))
+    
+    def _on_add(self, event=None):
+        value = self.entry_var.get().strip()
+        if value:
+            self.items.append(value)
+            self._save_items()
+            self._refresh_list()
+            self.entry_var.set("")
+            if self.on_update_callback:
+                self.on_update_callback()
+
+    def _load_items(self):
+        self.items = []
+        if self.file_path.exists():
+            try:
+                content = self.file_path.read_text(encoding="utf-8")
+                self.items = [line.strip() for line in content.splitlines() if line.strip()]
+            except Exception as e:
+                log_manager.log_error(e, f"_load_items ({self.config_type})")
+
+    def _save_items(self):
+        try:
+            self.file_path.parent.mkdir(parents=True, exist_ok=True)
+            content = "\n".join(self.items) + "\n" if self.items else ""
+            self.file_path.write_text(content, encoding="utf-8")
+        except Exception as e:
+            log_manager.log_error(e, f"_save_items ({self.config_type})")
+
+    def _refresh_list(self):
+        for frame in self.item_frames:
+            frame.destroy()
+        self.item_frames = []
+
+        for i, item in enumerate(self.items):
+            item_frame = Frame(self.items_frame, bg=self.theme['bg'], padx=5, pady=2)
+            item_frame.pack(fill="x")
+            self.item_frames.append(item_frame)
+
+            drag_handle = Label(
+                item_frame,
+                text="⋮⋮",
+                bg=self.theme['bg'],
+                fg=self.theme['fg'],
+                cursor="hand2"
+            )
+            drag_handle.pack(side="left", padx=(0, 5))
+            drag_handle.bind("<ButtonPress-1>", lambda e, idx=i: self._start_drag(e, idx))
+            drag_handle.bind("<B1-Motion>", self._on_drag)
+            drag_handle.bind("<ButtonRelease-1>", self._on_release)
+
+            label = Label(
+                item_frame,
+                text=item,
+                bg=self.theme['widget_bg'],
+                fg=self.theme['fg'],
+                relief="flat",
+                padx=5,
+                pady=2
+            )
+            label.pack(side="left", fill="x", expand=True)
+
+            delete_btn = Button(
+                item_frame,
+                text="X",
+                command=lambda idx=i: self._delete_item(idx),
+                bg=self.theme['button_bg'],
+                fg=self.theme['fg'],
+                bd=0,
+                relief='flat',
+                width=2
+            )
+            delete_btn.pack(side="right")
+
+        self.items_frame.update_idletasks()
+        self.canvas.config(scrollregion=self.canvas.bbox("all"))
+
+    def _start_drag(self, event, idx):
+        self.drag_data["item"] = idx
+        self.drag_data["frame"] = self.item_frames[idx]
+        self.drag_data["x"] = event.x
+        self.drag_data["y"] = event.y
+        self.drag_data["target_idx"] = None
+
+        self._create_drag_feedback(idx)
+    
+    def _create_drag_feedback(self, idx):
+        if self.drag_feedback:
+            self.drag_feedback.destroy()
+
+        item_frame = self.item_frames[idx]
+        self.drag_feedback = Frame(self.canvas, bg=self.theme['widget_bg'])
+        self.drag_feedback.place(in_=self.canvas, x=0, y=0, anchor="nw")
+
+        label = Label(
+            self.drag_feedback,
+            text=self.items[idx],
+            bg=self.theme['widget_bg'],
+            fg=self.theme['fg'],
+            relief="flat",
+            padx=5,
+            pady=2
+        )
+        label.pack()
+    
+    def _update_drag_feedback(self, x, y):
+        if self.drag_feedback:
+            canvas_x = self.canvas.winfo_rootx()
+            canvas_y = self.canvas.winfo_rooty()
+        
+            scroll_y = self.canvas.yview()[0] * (self.canvas.winfo_height() - self.items_frame.winfo_height())
+            adjusted_y = y + scroll_y
+        
+            self.drag_feedback.place(in_=self.canvas, x=x, y=adjusted_y, anchor="nw")
+
+    def _on_press(self, event):
+        widget = event.widget
+        if widget.winfo_class() == "Label" and widget.cget("text") == "⋮⋮":
+            for i, frame in enumerate(self.item_frames):
+                if widget in frame.winfo_children():
+                    self._start_drag(event, i)
+                    break
+
+    def _on_drag(self, event):
+        if self.drag_data["item"] is not None:
+            canvas_x = self.canvas.canvasx(event.x)
+            canvas_y = self.canvas.canvasy(event.y)
+
+            scroll_y = self.canvas.yview()[0] * self.canvas.winfo_height()
+            adjusted_y = canvas_y + scroll_y
+
+            if self.drag_feedback:
+                self._update_drag_feedback(canvas_x, adjusted_y)
+
+            target_idx = None
+            for i, frame in enumerate(self.item_frames):
+                frame_y = frame.winfo_y()
+                frame_height = frame.winfo_height()
+                if adjusted_y < frame_y + frame_height / 2:
+                    target_idx = i
+                    break
+
+            self.drag_data["target_idx"] = target_idx
+
+    def _on_release(self, event):
+        if self.drag_data["item"] is not None and self.drag_data["target_idx"] is not None:
+            # Only reorder on release
+            source_idx = self.drag_data["item"]
+            target_idx = self.drag_data["target_idx"]
+
+            if source_idx != target_idx:
+                item = self.items.pop(source_idx)
+                self.items.insert(target_idx, item)
+                self._save_items()
+                self._refresh_list()
+                if self.on_update_callback:
+                    self.on_update_callback()
+
+        if self.drag_feedback:
+            self.drag_feedback.destroy()
+            self.drag_feedback = None
+
+        self.drag_data = {"x": 0, "y": 0, "item": None, "frame": None, "target_idx": None}
+
+    def _delete_item(self, idx):
+        if 0 <= idx < len(self.items):
+            self.items.pop(idx)
+            self._save_items()
+            self._refresh_list()
+            if self.on_update_callback:
+                self.on_update_callback()
+
+    def _on_canvas_configure(self, event):
+        self.canvas.itemconfig(self.canvas_window, width=event.width)
+
+    def _on_items_configure(self, event):
+        self.canvas.config(scrollregion=self.canvas.bbox("all"))
+
+    def get_values(self):
+        return self.items
+
+    def set_values(self, values):
+        self.items = list(values)
+        self._save_items()
+        self._refresh_list()
+
+# ------------------------------------------------------------
 class CustomModalDialog:
     def __init__(self, parent, title, message, dialog_type="info", buttons=None, callback=None):
         self.parent = parent
@@ -2461,6 +2746,8 @@ class CustomModalDialog:
                 buttons = [{"text": "OK", "value": True}]
             elif dialog_type == "okcancel":
                 buttons = [{"text": "OK", "value": True}, {"text": "Cancel", "value": False}]
+            elif dialog_type == "yesnocancel":
+                buttons = [{"text": "Yes", "value": True}, {"text": "No", "value": False}, {"text": "Cancel", "value": None}]
             else:
                 buttons = [{"text": "OK", "value": True}]
 
@@ -2802,15 +3089,18 @@ class SearchManager:
             log_manager.log_message(f"❌ Request failed for AppID {appid}: {error_msg}")
             if self._ui:
                 def show_options():
-                    result = messagebox.askyesnocancel(
+                    result = show_custom_dialog(
+                        self._ui,
+                        "yesno",
                         "Download Failed",
                         f"Could not download AppID {appid}:\n{error_msg}\n\n"
                         "Options:\n"
                         "1. Open in browser to save manually (Yes)\n"
                         "2. Check your internet connection (No)\n"
-                        "3. Cancel (Cancel)"
+                        "3. Cancel (Cancel)",
+                        buttons=[{"text": "Yes", "value": True}, {"text": "No", "value": False}, {"text": "Cancel", "value": None}]
                     )
-                    if result:
+                    if result is True:
                         webbrowser.open(f"https://store.steampowered.com/app/{appid}/")
                         if self._ui:
                             self._ui.search_entry.delete(0, tk.END)
@@ -4008,6 +4298,13 @@ class WatcherUI(tk.Tk):
         if hasattr(self, 'overlay_config_show_btn') and self.overlay_config_show_btn.winfo_exists():
             self.overlay_config_show_btn.config(bg=theme['button_bg'], fg=theme['fg'])
 
+        # Avatar image frame
+        if hasattr(self, 'avatar_image_frame') and self.avatar_image_frame.winfo_exists():
+            self.avatar_image_frame.config(bg=theme['widget_bg'])
+            if hasattr(self, 'avatar_img_label') and self.avatar_img_label.winfo_exists():
+                self.avatar_img_label.config(bg=theme['widget_bg'])
+                self._load_avatar_image()
+
         self.log_btn.config(bg=theme['button_bg'], fg=theme['fg'])
 
         self.style.configure('TNotebook', background=theme['bg'])
@@ -4673,7 +4970,84 @@ class WatcherUI(tk.Tk):
         settings_container = Frame(user_container, bg=theme['bg'])
         settings_container.pack(pady=10, padx=20, fill="x")
 
+        # ===== AVATAR CONFIG =====
+        avatar_enable_frame = Frame(settings_container, bg=theme['bg'])
+        avatar_enable_frame.pack(fill="x", pady=5)
+        self.avatar_enable_var = tk.BooleanVar(value=self.user_config.get("avatar_enabled", False))
+        Checkbutton(
+            avatar_enable_frame,
+            text="Enable Avatar",
+            variable=self.avatar_enable_var,
+            command=lambda: self.toggle_user_config_fields("avatar"),
+            bg=theme['bg'],
+            fg=theme['fg'],
+            activebackground=theme['bg'],
+            activeforeground=theme['fg'],
+            selectcolor=theme['widget_bg']
+        ).pack(side="left", anchor="w")
+
+        self.avatar_config_show_btn = Button(
+            avatar_enable_frame,
+            text="Show",
+            command=lambda: self.menu_manager.toggle_frame('avatar_config_fields'),
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            bd=0,
+            relief='flat'
+        )
+        self.avatar_config_show_btn.pack(side="right")
+
+        self.avatar_fields_frame = Frame(settings_container, bg=theme['bg'])
+        self.avatar_fields_frame.pack(fill="x", pady=10)
+        if not self.avatar_enable_var.get():
+            self.avatar_fields_frame.pack_forget()
+
+        self.menu_manager.register_toggle_button('avatar_config_fields', self.avatar_config_show_btn, self.avatar_fields_frame, "hidden", avatar_enable_frame)
+
+        self.avatar_controls_frame = Frame(self.avatar_fields_frame, bg=theme['bg'])
+        self.avatar_controls_frame.pack(fill="x", pady=5)
+
+        self.avatar_image_frame = Frame(self.avatar_controls_frame, bg=theme['widget_bg'], width=AVATAR_SIZE, height=AVATAR_SIZE)
+        self.avatar_image_frame.pack(side="left", padx=(0, 10))
+        self.avatar_image_frame.pack_propagate(False)
+
+        self.default_avatar_path = APP_FOLDER / "icons" / "account_avatar.jpg"
+        self.custom_avatar_path = EXTRA_FOLDER / "account_avatar.jpg"
+        self.backup_avatar_path = APP_FOLDER / "icons" / "user_avatar.jpg"
+
+        self.avatar_img_label = Label(self.avatar_image_frame, bg=theme['widget_bg'])
+        self.avatar_img_label.pack(fill="both", expand=True)
+        self._load_avatar_image()
+
+        buttons_frame = Frame(self.avatar_controls_frame, bg=theme['bg'])
+        buttons_frame.pack(side="left", fill="y")
+
+        self.avatar_browse_btn = Button(
+            buttons_frame,
+            text="Browse",
+            command=self._browse_avatar,
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            width=10
+        )
+        self.avatar_browse_btn.pack(pady=(0, 5))
+
+        self.avatar_remove_btn = Button(
+            buttons_frame,
+            text="Remove",
+            command=self._remove_avatar,
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            width=10
+        )
+        self.avatar_remove_btn.pack()
+
+        self.toggle_user_config_fields("avatar")
+
         # ===== Account CONFIG =====
+        account_separator = Frame(settings_container, height=2, bg=theme['border'])
+        account_separator.pack(fill="x", pady=(10, 10))
+
         enable_frame = Frame(settings_container, bg=theme['bg'])
         enable_frame.pack(fill="x", pady=5)
         self.enable_var = tk.BooleanVar(value=self.user_config.get("enabled", False))
@@ -4915,10 +5289,132 @@ class WatcherUI(tk.Tk):
 
         # Register overlay config fields with MenuManager
         self.menu_manager.register_toggle_button('overlay_config_fields', self.overlay_config_show_btn, self.overlay_fields_frame, "hidden", overlay_enable_frame)
-
         if not self.overlay_config_forms_created:
             self._create_overlay_config_forms()
             self.overlay_config_forms_created = True
+
+        # ===== Main CONFIG =====
+        self.main_config_fields_frame = Frame(settings_container, bg=theme['bg'])
+        if not self.main_config_forms_created:
+            self._create_main_config_forms()
+            self.main_config_forms_created = True
+
+        main_config_separator = Frame(settings_container, height=2, bg=theme['border'])
+        main_config_separator.pack(fill="x", pady=(10, 10))
+
+        main_conf_enable_frame = Frame(settings_container, bg=theme['bg'])
+        main_conf_enable_frame.pack(fill="x", pady=5)
+        self.main_enable_var = tk.BooleanVar(value=self.user_config.get("main_enabled", False))
+        Checkbutton(
+            main_conf_enable_frame,
+            text="Enable Main Config",
+            variable=self.main_enable_var,
+            command=lambda: self.toggle_user_config_fields("main"),
+            bg=theme['bg'],
+            fg=theme['fg'],
+            activebackground=theme['bg'],
+            activeforeground=theme['fg'],
+            selectcolor=theme['widget_bg']
+        ).pack(side="left", anchor="w")
+
+        self.main_config_show_btn = Button(
+            main_conf_enable_frame,
+            text="Show",
+            command=lambda: self.menu_manager.toggle_frame('main_config_fields_frame'),
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            bd=0,
+            relief='flat'
+        )
+        self.main_config_show_btn.pack(side="right")
+
+        self.main_config_fields = Frame(settings_container, bg=theme['bg'])
+        self.main_config_fields_frame.pack(fill="x", pady=10)
+
+        # Register main config fields with MenuManager
+        self.menu_manager.register_toggle_button('main_config_fields_frame', self.main_config_show_btn, self.main_config_fields_frame, "hidden", main_conf_enable_frame)
+
+        # ===== Custom Broadcasts CONFIG =====
+        self.broadcasts_config_fields_frame = Frame(settings_container, bg=theme['bg'])
+        if not self.broadcasts_config_forms_created:
+            self._create_broadcasts_config_forms()
+            self.broadcasts_config_forms_created = True
+
+        broadcasts_config_separator = Frame(settings_container, height=2, bg=theme['border'])
+        broadcasts_config_separator.pack(fill="x", pady=(10, 10))
+
+        broadcasts_conf_enable_frame = Frame(settings_container, bg=theme['bg'])
+        broadcasts_conf_enable_frame.pack(fill="x", pady=5)
+        self.broadcasts_enable_var = tk.BooleanVar(value=self.user_config.get("broadcasts_enabled", False))
+        Checkbutton(
+            broadcasts_conf_enable_frame,
+            text="Enable Broadcasts Config",
+            variable=self.broadcasts_enable_var,
+            command=lambda: self.toggle_user_config_fields("broadcasts"),
+            bg=theme['bg'],
+            fg=theme['fg'],
+            activebackground=theme['bg'],
+            activeforeground=theme['fg'],
+            selectcolor=theme['widget_bg']
+        ).pack(side="left", anchor="w")
+
+        self.broadcasts_config_show_btn = Button(
+            broadcasts_conf_enable_frame,
+            text="Show",
+            command=lambda: [self.menu_manager.toggle_frame('broadcasts_config_fields_frame'), self._refresh_draggable_list("broadcasts") if hasattr(self, 'broadcasts_list') else None][-1],
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            bd=0,
+            relief='flat'
+        )
+        self.broadcasts_config_show_btn.pack(side="right")
+
+        self.broadcasts_config_fields = Frame(settings_container, bg=theme['bg'])
+        self.broadcasts_config_fields_frame.pack(fill="x", pady=10)
+
+        # Register broadcasts config fields with MenuManager
+        self.menu_manager.register_toggle_button('broadcasts_config_fields_frame', self.broadcasts_config_show_btn, self.broadcasts_config_fields_frame, "hidden", broadcasts_conf_enable_frame)
+
+        # ===== Invite CONFIG =====
+        self.invite_config_fields_frame = Frame(settings_container, bg=theme['bg'])
+        if not self.invite_config_forms_created:
+            self._create_invite_config_forms()
+            self.invite_config_forms_created = True
+
+        invite_config_separator = Frame(settings_container, height=2, bg=theme['border'])
+        invite_config_separator.pack(fill="x", pady=(10, 10))
+
+        invite_conf_enable_frame = Frame(settings_container, bg=theme['bg'])
+        invite_conf_enable_frame.pack(fill="x", pady=5)
+        self.invite_enable_var = tk.BooleanVar(value=self.user_config.get("invite_enabled", False))
+        Checkbutton(
+            invite_conf_enable_frame,
+            text="Enable Auto Invite Config",
+            variable=self.invite_enable_var,
+            command=lambda: self.toggle_user_config_fields("invite"),
+            bg=theme['bg'],
+            fg=theme['fg'],
+            activebackground=theme['bg'],
+            activeforeground=theme['fg'],
+            selectcolor=theme['widget_bg']
+        ).pack(side="left", anchor="w")
+
+        self.invite_config_show_btn = Button(
+            invite_conf_enable_frame,
+            text="Show",
+            command=lambda: [self.menu_manager.toggle_frame('invite_config_fields_frame'), self._refresh_draggable_list("invite") if hasattr(self, 'invite_list') else None][-1],
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            bd=0,
+            relief='flat'
+        )
+        self.invite_config_show_btn.pack(side="right")
+
+        self.invite_config_fields = Frame(settings_container, bg=theme['bg'])
+        self.invite_config_fields_frame.pack(fill="x", pady=10)
+
+        # Register invite config fields with MenuManager
+        self.menu_manager.register_toggle_button('invite_config_fields_frame', self.invite_config_show_btn, self.invite_config_fields_frame, "hidden", invite_conf_enable_frame)
 
         self.toggle_user_config_fields()
         self.settings_btn.lift()
@@ -5023,17 +5519,36 @@ class WatcherUI(tk.Tk):
             frame = self.saves_fields_frame
             enable_var = self.saves_enable_var
             config_key = "saves_enabled"
-        else:
+        elif config_type == "overlay":
             frame = self.overlay_fields_frame
             enable_var = self.overlay_enable_var
             config_key = "overlay_enabled"
+        elif config_type == "main":
+            frame = self.main_config_fields_frame
+            enable_var = self.main_enable_var
+            config_key = "main_enabled"
+        elif config_type == "broadcasts":
+            frame = self.broadcasts_config_fields_frame
+            enable_var = self.broadcasts_enable_var
+            config_key = "broadcasts_enabled"
+        elif config_type == "avatar":
+            frame = self.avatar_fields_frame
+            enable_var = self.avatar_enable_var
+            config_key = "avatar_enabled"
+        else:
+            frame = self.invite_config_fields_frame
+            enable_var = self.invite_enable_var
+            config_key = "invite_enabled"
 
         state = "normal" if enable_var.get() else "disabled"
-
         self.user_config.set(config_key, enable_var.get())
-        self._update_user_config_ini_files(config_type)
 
-        # Enable/disable all widgets in the frame
+        if config_type == "avatar":
+            self._handle_avatar_enable_change(enable_var.get())
+            self._update_user_config_ini_files(config_type)
+        else:
+            self._update_user_config_ini_files(config_type)
+
         def enable_disable_widgets(f):
             for child in f.winfo_children():
                 if isinstance(child, Frame):
@@ -5041,8 +5556,140 @@ class WatcherUI(tk.Tk):
                 elif isinstance(child, (Entry, ttk.Combobox, Checkbutton, Button)):
                     child.configure(state=state)
 
-            if frame and frame.winfo_exists():
-                enable_disable_widgets(frame)
+        if frame and frame.winfo_exists():
+            enable_disable_widgets(frame)
+
+    def _load_avatar_image(self):
+        theme = self.custom_theme if hasattr(self, 'custom_theme') and self.custom_theme else (self.DARK_THEME if self.dark_mode else self.LIGHT_THEME)
+
+        # Determine which avatar to load
+        avatar_path = self.custom_avatar_path if self.custom_avatar_path.exists() else self.default_avatar_path
+
+        try:
+            if avatar_path.exists():
+                pil_img = Image.open(avatar_path)
+                pil_img = pil_img.resize((AVATAR_SIZE, AVATAR_SIZE))
+                avatar_img = ImageTk.PhotoImage(pil_img)
+                self.avatar_img_label.config(image=avatar_img, bg=theme['widget_bg'])
+                self.avatar_img_label.image = avatar_img  # Keep reference
+            else:
+                self.avatar_img_label.config(image='', bg=theme['widget_bg'], text="No Avatar", compound="center")
+        except Exception as e:
+            log_manager.log_error(f"Failed to load avatar: {e}")
+            self.avatar_img_label.config(image='', bg=theme['widget_bg'], text="Error", compound="center")
+
+    def _browse_avatar(self):
+        file_types = [
+            ("Image Files", "*.jpg *.jpeg *.png *.bmp *.gif"),
+            ("All Files", "*.*")
+        ]
+        file_path = filedialog.askopenfilename(
+            title="Select Avatar Image (Max 184x184)",
+            filetypes=file_types
+        )
+
+        if not file_path:
+            return
+
+        try:
+            with Image.open(file_path) as img:
+                width, height = img.size
+                if width > 184 or height > 184:
+                    show_custom_dialog(self, "error", "Invalid Size", f"Image must be 184x184 or smaller. Selected: {width}x{height}")
+                    return
+
+            EXTRA_FOLDER.mkdir(parents=True, exist_ok=True)
+            dest_path = EXTRA_FOLDER / "account_avatar.jpg"
+            shutil.copy2(file_path, dest_path)
+
+            self.user_config.set("avatar_custom", True)
+            self.user_config.set("avatar_enabled", True)
+            self.avatar_enable_var.set(True)
+
+            self._load_avatar_image()
+            log_manager.log_message("✅ Custom avatar set successfully")
+
+        except Exception as e:
+            log_manager.log_error(f"Failed to set custom avatar: {e}")
+            show_custom_dialog(self, "error", "Error", f"Failed to load avatar: {e}")
+
+    def _remove_avatar(self):
+        if not self.user_config.get("avatar_custom", False):
+            show_custom_dialog(self, "info", "Info", "No custom avatar to remove")
+            return
+
+        if not _gui_yes_no("Remove custom avatar and revert to default?"):
+            return
+
+        try:
+            # Delete from EXTRA_FOLDER
+            if self.custom_avatar_path.exists():
+                self.custom_avatar_path.unlink()
+
+            # Reset state
+            self.user_config.set("avatar_custom", False)
+
+            # Reload default avatar
+            self._load_avatar_image()
+            log_manager.log_message("🗑️ Custom avatar removed, reverted to default")
+
+        except Exception as e:
+            log_manager.log_error(f"Failed to remove avatar: {e}")
+            show_custom_dialog(self, "error", "Error", f"Failed to remove avatar: {e}")
+
+    def _handle_avatar_enable_change(self, enabled: bool):
+        try:
+            if enabled:
+                # If we have a backup and no custom avatar, restore from backup
+                if not self.user_config.get("avatar_custom", False) and self.backup_avatar_path.exists():
+                    EXTRA_FOLDER.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(self.backup_avatar_path, self.custom_avatar_path)
+                    self.backup_avatar_path.unlink()
+                    self._load_avatar_image()
+                # If no avatar in EXTRA_FOLDER, copy default
+                elif not self.custom_avatar_path.exists():
+                    EXTRA_FOLDER.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(self.default_avatar_path, self.custom_avatar_path)
+                    self._load_avatar_image()
+            else:
+                # Disable: backup custom avatar if exists, then remove from EXTRA_FOLDER
+                if self.custom_avatar_path.exists():
+                    if self.user_config.get("avatar_custom", False):
+                        # Backup custom avatar
+                        self.backup_avatar_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(self.custom_avatar_path, self.backup_avatar_path)
+                    # Remove from EXTRA_FOLDER
+                    self.custom_avatar_path.unlink()
+                # Reset custom flag if no backup exists
+                if not self.backup_avatar_path.exists():
+                    self.user_config.set("avatar_custom", False)
+
+            self._load_avatar_image()
+
+        except Exception as e:
+            log_manager.log_error(f"Error in _handle_avatar_enable_change: {e}")
+
+    def _manage_avatar_file(self, action: str):
+        try:
+            EXTRA_FOLDER.mkdir(parents=True, exist_ok=True)
+            is_custom = self.user_config.get("avatar_custom", False)
+
+            if action == "copy":
+                if is_custom:
+                    return
+                if self.default_avatar_path.exists():
+                    shutil.copy2(self.default_avatar_path, self.custom_avatar_path)
+
+            elif action == "remove":
+                if self.custom_avatar_path.exists():
+                    if is_custom:
+                        # Backup custom avatar before removing
+                        self.backup_avatar_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(self.custom_avatar_path, self.backup_avatar_path)
+                    self.custom_avatar_path.unlink()
+
+        except Exception as e:
+            log_manager.log_error(f"Failed to {action} avatar file: {e}")
 
     def _save_user_config(self, key, value):
         self.user_config.set(key, value)
@@ -5062,6 +5709,16 @@ class WatcherUI(tk.Tk):
         if key.startswith("overlay_") or key in ["Font_Override", "Font_Size", "Icon_Size"]:
             if self.overlay_enable_var.get():
                 self._update_user_config_ini_files("overlay")
+
+        if key.startswith("main_") or key in ["crash_printer_location", "steam_game_stats_reports_dir", "listen_port", "paginated_achievements_icons"]:
+            if self.main_enable_var.get():
+                self._update_user_config_ini_files("main")
+
+        if key.startswith("broadcasts_") and self.broadcasts_enable_var.get():
+            self._update_user_config_ini_files("broadcasts")
+        
+        if key.startswith("invite_") and self.invite_enable_var.get():
+            self._update_user_config_ini_files("invite")
 
     def _create_overlay_config_forms(self):
         theme = self.DARK_THEME if self.dark_mode and not self.custom_theme else (self.custom_theme if self.custom_theme else self.LIGHT_THEME)
@@ -5293,6 +5950,223 @@ class WatcherUI(tk.Tk):
         for key, display_name, field_type in appearance_settings_right:
             _create_setting_row(app_right_frame, key, display_name, field_type)
 
+    def _create_main_config_forms(self):
+        theme = self.DARK_THEME if self.dark_mode and not self.custom_theme else (self.custom_theme if self.custom_theme else self.LIGHT_THEME)
+
+        if not hasattr(self, 'main_config_vars'):
+            self.main_config_vars = {}
+
+        general_label = Label(
+            self.main_config_fields_frame,
+            text="General",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 14, "bold")
+        )
+        general_label.pack(pady=10)
+        separator = Frame(self.main_config_fields_frame, height=2, bg=theme['border'])
+        separator.pack(fill="x", pady=(0, 10))
+        general_container = Frame(self.main_config_fields_frame, bg=theme['bg'])
+        general_container.pack(fill="x", pady=5)
+
+        left_frame = Frame(general_container, bg=theme['bg'])
+        left_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
+        right_frame = Frame(general_container, bg=theme['bg'])
+        right_frame.pack(side="right", fill="both", expand=True, padx=(5, 0))
+
+        def create_setting_row(parent, key, display_name, field_type="checkbox"):
+            frame = Frame(parent, bg=theme['bg'])
+            frame.pack(fill="x", pady=2)
+            label = Label(
+                frame,
+                text=display_name + ":",
+                bg=theme['bg'],
+                fg=theme['fg'],
+                width=25,
+                anchor="e"
+            )
+            label.pack(side="left", padx=(0, 10))
+            default_value = self.user_config.get("main_settings", {}).get(key, "0" if field_type == "checkbox" else "")
+            if field_type == "checkbox":
+                var = tk.BooleanVar(value=default_value == "1")
+                cb = Checkbutton(
+                    frame,
+                    variable=var,
+                    bg=theme['bg'],
+                    fg=theme['fg'],
+                    activebackground=theme['bg'],
+                    activeforeground=theme['fg'],
+                    selectcolor=theme['widget_bg']
+                )
+                cb.pack(side="left")
+                var.trace_add("write", lambda *args, k=key, v=var: self._save_main_config(k, "1" if v.get() else "0"))
+            else:  # entry
+                var = tk.StringVar(value=default_value)
+                entry = Entry(
+                    frame,
+                    textvariable=var,
+                    width=20,
+                    bg=theme['widget_bg'],
+                    fg=theme['fg']
+                )
+                entry.pack(side="left")
+                var.trace_add("write", lambda *args, k=key, v=var: self._save_main_config(k, v.get()))
+            self.main_config_vars[key] = var
+
+        general_left = [
+            ("new_app_ticket", "New App Ticket", "checkbox"),
+            ("gc_token", "GC Token", "checkbox"),
+            ("block_unknown_clients", "Block Unknown Clients", "checkbox"),
+            ("steam_deck", "Steam Deck", "checkbox"),
+            ("enable_account_avatar", "Enable Account Avatar", "checkbox"),
+        ]
+
+        general_right = [
+            ("enable_voice_chat", "Enable Voice Chat", "checkbox"),
+            ("immediate_gameserver_stats", "Immediate Game Server Stats", "checkbox"),
+            ("matchmaking_server_list_actual_type", "Matchmaking Server List Actual Type", "checkbox"),
+            ("matchmaking_server_details_via_source_query", "Matchmaking Server Details Via Source Query", "checkbox"),
+            ("crash_printer_location", "Crash Log Path", "entry"),
+        ]
+
+        for key, display, field_type in general_left:
+            create_setting_row(left_frame, key, display, "checkbox")
+        for item in general_right:
+            if isinstance(item, tuple):
+                key, display, field_type = item
+            else:
+                key, display = item
+                field_type = "checkbox"
+            create_setting_row(right_frame, key, display, "checkbox")
+
+        stats_label = Label(
+            self.main_config_fields_frame,
+            text="Stats",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 14, "bold")
+        )
+        stats_label.pack(pady=10)
+        separator = Frame(self.main_config_fields_frame, height=2, bg=theme['border'])
+        separator.pack(fill="x", pady=(0, 10))
+        stats_container = Frame(self.main_config_fields_frame, bg=theme['bg'])
+        stats_container.pack(fill="x", pady=5)
+        stats_left_frame = Frame(stats_container, bg=theme['bg'])
+        stats_left_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
+        stats_right_frame = Frame(stats_container, bg=theme['bg'])
+        stats_right_frame.pack(side="right", fill="both", expand=True, padx=(5, 0))
+
+        stats_left = [
+            ("disable_leaderboards_create_unknown", "Disable Leaderboards Create Unknown"),
+            ("allow_unknown_stats", "Allow Unknown Stats"),
+            ("stat_achievement_progress_functionality", "Stat Achievement Progress Functionality"),
+        ]
+        stats_right = [
+            ("save_only_higher_stat_achievement_progress", "Save Only Higher Stat Achievement Progress"),
+            ("paginated_achievements_icons", "Paginated Achievements Icons", "entry"),
+            ("record_playtime", "Record Playtime"),
+        ]
+
+        for key, display in stats_left:
+            create_setting_row(stats_left_frame, key, display)
+        for item in stats_right:
+            if isinstance(item, tuple):
+                key, display, field_type = item[0], item[1], item[2] if len(item) > 2 else "checkbox"
+            else:
+                key, display = item
+                field_type = "checkbox"
+            create_setting_row(stats_right_frame, key, display, field_type)
+
+        connectivity_label = Label(
+            self.main_config_fields_frame,
+            text="Connectivity",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 14, "bold")
+        )
+        connectivity_label.pack(pady=10)
+        separator = Frame(self.main_config_fields_frame, height=2, bg=theme['border'])
+        separator.pack(fill="x", pady=(0, 10))
+        connectivity_container = Frame(self.main_config_fields_frame, bg=theme['bg'])
+        connectivity_container.pack(fill="x", pady=5)
+        conn_left_frame = Frame(connectivity_container, bg=theme['bg'])
+        conn_left_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
+        conn_right_frame = Frame(connectivity_container, bg=theme['bg'])
+        conn_right_frame.pack(side="right", fill="both", expand=True, padx=(5, 0))
+
+        connectivity_left = [
+            ("disable_lan_only", "Disable LAN Only"),
+            ("disable_networking", "Disable Networking"),
+            ("listen_port", "Listen Port", "entry"),
+            ("offline", "Offline"),
+            ("disable_sharing_stats_with_gameserver", "Disable Sharing Stats With Game Server"),
+        ]
+        connectivity_right = [
+            ("disable_source_query", "Disable Source Query"),
+            ("share_leaderboards_over_network", "Share Leaderboards Over Network"),
+            ("disable_lobby_creation", "Disable Lobby Creation"),
+            ("download_steamhttp_requests", "Download SteamHTTP Requests"),
+        ]
+
+        for item in connectivity_left:
+            if isinstance(item, tuple):
+                key, display, field_type = item[0], item[1], item[2] if len(item) > 2 else "checkbox"
+            else:
+                key, display = item
+                field_type = "checkbox"
+            create_setting_row(conn_left_frame, key, display, field_type)
+        for item in connectivity_right:
+            if isinstance(item, tuple):
+                key, display, field_type = item[0], item[1], item[2] if len(item) > 2 else "checkbox"
+            else:
+                key, display = item
+                field_type = "checkbox"
+            create_setting_row(conn_right_frame, key, display, field_type)
+
+        misc_label = Label(
+            self.main_config_fields_frame,
+            text="Misc",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 14, "bold")
+        )
+        misc_label.pack(pady=10)
+        separator = Frame(self.main_config_fields_frame, height=2, bg=theme['border'])
+        separator.pack(fill="x", pady=(0, 10))
+        misc_container = Frame(self.main_config_fields_frame, bg=theme['bg'])
+        misc_container.pack(fill="x", pady=5)
+        misc_left_frame = Frame(misc_container, bg=theme['bg'])
+        misc_left_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
+        misc_right_frame = Frame(misc_container, bg=theme['bg'])
+        misc_right_frame.pack(side="right", fill="both", expand=True, padx=(5, 0))
+
+        misc_left = [
+            ("achievements_bypass", "Achievements Bypass"),
+            ("force_steamhttp_success", "Force SteamHTTP Success"),
+            ("disable_steamoverlaygameid_env_var", "Disable SteamOverlayGameID Env Var"),
+        ]
+        misc_right = [
+            ("enable_steam_preowned_ids", "Enable Steam Preowned IDs"),
+            ("steam_game_stats_reports_dir", "Game Stats Reports Dir", "entry"),
+            ("free_weekend", "Free Weekend"),
+        ]
+
+        for item in misc_left:
+            if isinstance(item, tuple):
+                key, display, field_type = item[0], item[1], item[2] if len(item) > 2 else "checkbox"
+            else:
+                key, display = item
+                field_type = "checkbox"
+            create_setting_row(misc_left_frame, key, display, field_type)
+
+        for item in misc_right:
+            if isinstance(item, tuple):
+                key, display, field_type = item[0], item[1], item[2] if len(item) > 2 else "checkbox"
+            else:
+                key, display = item
+                field_type = "checkbox"
+            create_setting_row(misc_right_frame, key, display, field_type)
+
     def _browse_font(self):
         font_file = filedialog.askopenfilename(
             title="Select Font File",
@@ -5316,9 +6190,69 @@ class WatcherUI(tk.Tk):
                 log_manager.log_message(f"Font copied to {dest_path}")
             except Exception as e:
                 log_manager.log_error(e, "_browse_font")
-                messagebox.showerror("Error", f"Failed to copy font: {e}")
+                show_custom_dialog(self, "error", "Error", f"Failed to copy font: {e}")
 
-    def _update_user_config_ini_files(self, config_type="all"):
+    def _create_broadcasts_config_forms(self):
+        self._create_draggable_config_forms(
+            config_type="broadcasts",
+            file_name="custom_broadcasts.txt",
+            frame_attr="broadcasts_config_fields_frame",
+            instruction_text="Enter IP addresses or domains (one per line):"
+        )
+
+    def _create_invite_config_forms(self):
+        self._create_draggable_config_forms(
+            config_type="invite",
+            file_name="auto_accept_invite.txt",
+            frame_attr="invite_config_fields_frame",
+            instruction_text="Enter SteamIDs (one per line):"
+        )
+
+    def _create_draggable_config_forms(self, config_type, file_name, frame_attr, instruction_text):
+        theme = self.DARK_THEME if self.dark_mode and not self.custom_theme else (self.custom_theme if self.custom_theme else self.LIGHT_THEME)
+        
+        frame = getattr(self, frame_attr)
+        
+        for widget in frame.winfo_children():
+            widget.destroy()
+        
+        file_path = EXTRA_FOLDER / file_name
+        list_instance = DraggableList(
+            frame,
+            config_type,
+            file_path,
+            self.user_config,
+            theme,
+            lambda cfg=config_type: self._update_user_config_ini_files(cfg)
+        )
+        
+        setattr(self, f'{config_type}_list', list_instance)
+        
+        list_instance._load_items()
+        list_instance._refresh_list()
+        
+        instruction = Label(
+            frame,
+            text=instruction_text,
+            bg=theme['bg'],
+            fg=theme['fg']
+        )
+        instruction.pack(anchor="w", pady=(0, 5))
+    
+    def _refresh_draggable_list(self, config_type):
+        list_instance = getattr(self, f'{config_type}_list', None)
+        if list_instance:
+            list_instance._load_items()
+            list_instance._refresh_list()
+
+    def _update_user_config_ini_files(self, config_type=None):
+        # Handle avatar config
+        if config_type == "avatar" or config_type is None:
+            if self.avatar_enable_var.get():
+                self._manage_avatar_file("copy")
+            else:
+                self._manage_avatar_file("remove")
+
         # ===== USER CONFIG =====
         user_ini_path = EXTRA_FOLDER / "configs.user.ini"
 
@@ -5409,6 +6343,95 @@ class WatcherUI(tk.Tk):
                         overlay_ini_path.unlink()
                     except Exception as e:
                         log_manager.log_error(e, "_update_user_config_ini_files (removing overlay)")
+
+        # ===== MAIN CONFIG =====
+        if config_type in ("main", "all") and hasattr(self, 'main_enable_var'):
+            main_ini_path = EXTRA_FOLDER / "configs.main.ini"
+            if self.main_enable_var.get():
+                main_settings = self.user_config.get("main_settings", {})
+
+                lines = []
+                lines.append("[main::general]")
+                general_keys = [
+                    "new_app_ticket", "gc_token", "block_unknown_clients", "steam_deck",
+                    "enable_account_avatar", "enable_voice_chat", "immediate_gameserver_stats",
+                    "matchmaking_server_list_actual_type", "matchmaking_server_details_via_source_query",
+                    "crash_printer_location"
+                ]
+                for key in general_keys:
+                    if key in main_settings:
+                        lines.append(f"{key}={main_settings[key]}")
+
+                lines.append("")
+                lines.append("[main::stats]")
+                stats_keys = [
+                    "disable_leaderboards_create_unknown", "allow_unknown_stats",
+                    "stat_achievement_progress_functionality", "save_only_higher_stat_achievement_progress",
+                    "paginated_achievements_icons", "record_playtime"
+                ]
+                for key in stats_keys:
+                    if key in main_settings:
+                        lines.append(f"{key}={main_settings[key]}")
+
+                lines.append("")
+                lines.append("[main::connectivity]")
+                connectivity_keys = [
+                    "disable_lan_only", "disable_networking", "listen_port", "offline",
+                    "disable_sharing_stats_with_gameserver", "disable_source_query",
+                    "share_leaderboards_over_network", "disable_lobby_creation", "download_steamhttp_requests"
+                ]
+                for key in connectivity_keys:
+                    if key in main_settings:
+                        lines.append(f"{key}={main_settings[key]}")
+
+                lines.append("")
+                lines.append("[main::misc]")
+                misc_keys = [
+                    "achievements_bypass", "force_steamhttp_success",
+                    "disable_steamoverlaygameid_env_var", "enable_steam_preowned_ids",
+                    "steam_game_stats_reports_dir", "free_weekend"
+                ]
+                for key in misc_keys:
+                    if key in main_settings:
+                        lines.append(f"{key}={main_settings[key]}")
+
+                try:
+                    main_ini_path.write_text("\n".join(lines), encoding="utf-8")
+                    log_manager.log_message(f"Updated main config: {main_ini_path}")
+                except Exception as e:
+                    log_manager.log_error(e, "_update_user_config_ini_files")
+            else:
+                if main_ini_path.exists():
+                    try:
+                        main_ini_path.unlink()
+                    except Exception as e:
+                        log_manager.log_error(e, "_update_user_config_ini_files (removing main)")
+
+        # ===== BROADCASTS CONFIG =====
+        if config_type in ("broadcasts", "all") and hasattr(self, 'broadcasts_enable_var'):
+            broadcasts_file = EXTRA_FOLDER / "custom_broadcasts.txt"
+            if self.broadcasts_enable_var.get():
+                if not broadcasts_file.exists() and hasattr(self, 'broadcasts_list'):
+                    self.broadcasts_list._save_items()
+            else:
+                if broadcasts_file.exists():
+                    try:
+                        broadcasts_file.unlink()
+                    except Exception as e:
+                        log_manager.log_error(e, "_update_user_config_ini_files (removing broadcasts)")
+        
+        # ===== INVITE CONFIG =====
+        if config_type in ("invite", "all") and hasattr(self, 'invite_enable_var'):
+            invite_file = EXTRA_FOLDER / "auto_accept_invite.txt"
+            if self.invite_enable_var.get():
+                if not invite_file.exists() and hasattr(self, 'invite_list'):
+                    self.invite_list._save_items()
+            else:
+                if invite_file.exists():
+                    try:
+                        invite_file.unlink()
+                    except Exception as e:
+                        log_manager.log_error(e, "_update_user_config_ini_files (removing invite)")
 
 
     def __init__(self, file_queue: queue.Queue):
@@ -5634,12 +6657,28 @@ class WatcherUI(tk.Tk):
 
         self.inner_frame.bind("<Configure>", self._update_scroll_region)
 
-        self.overlay_config_forms_created = False
-        self.overlay_vars = {}
-
         self.user_settings = USER_SETTINGS
         self.general_settings = GENERAL_SETTINGS
         self.user_config = USER_SETTINGS
+
+        self.avatar_enable_var = None
+        self.avatar_fields_frame = None
+        self.avatar_config_show_btn = None
+        self.avatar_img_label = None
+        self.avatar_browse_btn = None
+        self.avatar_remove_btn = None
+
+        self.overlay_config_forms_created = False
+        self.overlay_vars = {}
+
+        self.main_config_forms_created = False
+        self.main_config_vars = {}
+
+        self.broadcasts_config_forms_created = False
+        self.broadcastsconfig_vars = {}
+
+        self.invite_config_forms_created = False
+        self.invite_config_vars = {}
 
         self._init_game_config()
 
@@ -6774,6 +7813,14 @@ class WatcherUI(tk.Tk):
 
         self.stub_removal_selected_files = []
         self.stub_removal_options = {}
+
+        if hasattr(self, 'backup_avatar_path') and self.backup_avatar_path.exists():
+            if not self.user_config.get("avatar_custom", False):
+                try:
+                    self.backup_avatar_path.unlink()
+                    log_manager.log_message("🗑️  Cleaned up unused avatar backup")
+                except Exception:
+                    pass
 
         self.destroy()
 
