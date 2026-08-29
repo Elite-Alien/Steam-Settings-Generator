@@ -335,6 +335,7 @@ TEMP_FOLDER = APP_FOLDER / "temp"
 TEMP_FOLDER.mkdir(parents=True, exist_ok=True)
 #-------------------------------------------------------------
 AVATAR_SIZE = 184
+BUTTON_SIZE = 32
 EXTRA_FOLDER = pathlib.Path(__file__).resolve().parent / "Extra"
 EXTRA_FOLDER.mkdir(parents=True, exist_ok=True)
 #-------------------------------------------------------------
@@ -1684,7 +1685,7 @@ USER_SETTINGS = SettingsManager(
         "steamid": "76561197960287930",
         "language": "English",
         "country": "US",
-        "overlay_enabled": False,
+        "overlay_enabled": True,
         "overlay_settings": {
             "enable_experimental_overlay": "1",
             "hook_delay_sec": "0",
@@ -1782,7 +1783,8 @@ USER_SETTINGS = SettingsManager(
             "enable_steam_preowned_ids": "0",
             "steam_game_stats_reports_dir": "",
             "free_weekend": "0"
-        }
+        },
+        "controller_enabled": False,
     }
 )
 GENERAL_SETTINGS = SettingsManager(
@@ -2568,10 +2570,13 @@ class DraggableList:
     def _save_items(self):
         try:
             self.file_path.parent.mkdir(parents=True, exist_ok=True)
-            content = "\n".join(self.items) + "\n" if self.items else ""
+            items_to_save = [item.lower() if self.config_type == "languages" else item for item in self.items]
+            content = "\n".join(items_to_save) + "\n" if items_to_save else ""
             self.file_path.write_text(content, encoding="utf-8")
         except Exception as e:
             log_manager.log_error(e, f"_save_items ({self.config_type})")
+
+
 
     def _refresh_list(self):
         for frame in self.item_frames:
@@ -4305,6 +4310,16 @@ class WatcherUI(tk.Tk):
                 self.avatar_img_label.config(bg=theme['widget_bg'])
                 self._load_avatar_image()
 
+        # Controller glyph images
+        if hasattr(self, 'button_glyphs'):
+            for filename in self.button_glyphs.values():
+                img_label = getattr(self, f"glyph_img_{filename}", None)
+                img_frame = getattr(self, f"glyph_frame_{filename}", None)
+                if img_label and img_frame and img_label.winfo_exists():
+                    img_frame.config(bg=theme['widget_bg'])
+                    img_label.config(bg=theme['widget_bg'])
+                    self._load_glyph_image(filename, img_label, img_frame)
+
         self.log_btn.config(bg=theme['button_bg'], fg=theme['fg'])
 
         self.style.configure('TNotebook', background=theme['bg'])
@@ -5416,8 +5431,91 @@ class WatcherUI(tk.Tk):
         # Register invite config fields with MenuManager
         self.menu_manager.register_toggle_button('invite_config_fields_frame', self.invite_config_show_btn, self.invite_config_fields_frame, "hidden", invite_conf_enable_frame)
 
+        # ===== languages CONFIG =====
+        self.languages_config_fields_frame = Frame(settings_container, bg=theme['bg'])
+        if not self.languages_config_forms_created:
+            self._create_languages_config_forms()
+            self.languages_config_forms_created = True
+
+        languages_config_separator = Frame(settings_container, height=2, bg=theme['border'])
+        languages_config_separator.pack(fill="x", pady=(10, 10))
+
+        languages_conf_enable_frame = Frame(settings_container, bg=theme['bg'])
+        languages_conf_enable_frame.pack(fill="x", pady=5)
+        self.languages_enable_var = tk.BooleanVar(value=self.user_config.get("languages_enabled", False))
+        Checkbutton(
+            languages_conf_enable_frame,
+            text="Enable Languages Config",
+            variable=self.languages_enable_var,
+            command=lambda: self.toggle_user_config_fields("languages"),
+            bg=theme['bg'],
+            fg=theme['fg'],
+            activebackground=theme['bg'],
+            activeforeground=theme['fg'],
+            selectcolor=theme['widget_bg']
+        ).pack(side="left", anchor="w")
+
+        self.languages_config_show_btn = Button(
+            languages_conf_enable_frame,
+            text="Show",
+            command=lambda: [self.menu_manager.toggle_frame('languages_config_fields_frame'), self._refresh_draggable_list("languages") if hasattr(self, 'languages_list') else None][-1],
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            bd=0,
+            relief='flat'
+        )
+        self.languages_config_show_btn.pack(side="right")
+
+        self.languages_config_fields = Frame(settings_container, bg=theme['bg'])
+        self.languages_config_fields_frame.pack(fill="x", pady=10)
+
+        self.menu_manager.register_toggle_button('languages_config_fields_frame', self.languages_config_show_btn, self.languages_config_fields_frame, "hidden", languages_conf_enable_frame)
+
+        # ===== CONTROLLER CONFIG =====
+        controller_separator = Frame(settings_container, height=2, bg=theme['border'])
+        controller_separator.pack(fill="x", pady=(10, 10))
+
+        controller_enable_frame = Frame(settings_container, bg=theme['bg'])
+        controller_enable_frame.pack(fill="x", pady=5)
+        self.controller_enable_var = tk.BooleanVar(value=self.user_config.get("controller_enabled", False))
+        Checkbutton(
+            controller_enable_frame,
+            text="Enable Controller Config",
+            variable=self.controller_enable_var,
+            command=lambda: self.toggle_user_config_fields("controller"),
+            bg=theme['bg'],
+            fg=theme['fg'],
+            activebackground=theme['bg'],
+            activeforeground=theme['fg'],
+            selectcolor=theme['widget_bg']
+        ).pack(side="left", anchor="w")
+
+        self.controller_config_show_btn = Button(
+            controller_enable_frame,
+            text="Show",
+            command=lambda: self.menu_manager.toggle_frame('controller_config_fields'),
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            bd=0,
+            relief='flat'
+        )
+        self.controller_config_show_btn.pack(side="right")
+
+        self.controller_fields_frame = Frame(settings_container, bg=theme['bg'])
+        self.controller_fields_frame.pack(fill="x", pady=10)
+        if not self.controller_enable_var.get():
+            self.controller_fields_frame.pack_forget()
+        if not self.controller_config_forms_created:
+            self._create_controller_config_forms()
+            self.controller_config_forms_created = True
+
+        self.menu_manager.register_toggle_button('controller_config_fields', self.controller_config_show_btn, self.controller_fields_frame, "hidden", controller_enable_frame)
+
+        self.toggle_user_config_fields("controller")
+
         self.toggle_user_config_fields()
         self.settings_btn.lift()
+
 
     def downgrader(self, target: str = "app"):
         if target == "app":
@@ -5511,7 +5609,11 @@ class WatcherUI(tk.Tk):
 
 
     def toggle_user_config_fields(self, config_type="user"):
-        if config_type == "user":
+        if config_type == "avatar":
+            frame = self.avatar_fields_frame
+            enable_var = self.avatar_enable_var
+            config_key = "avatar_enabled"
+        elif config_type == "user":
             frame = self.fields_frame
             enable_var = self.enable_var
             config_key = "enabled"
@@ -5531,14 +5633,18 @@ class WatcherUI(tk.Tk):
             frame = self.broadcasts_config_fields_frame
             enable_var = self.broadcasts_enable_var
             config_key = "broadcasts_enabled"
-        elif config_type == "avatar":
-            frame = self.avatar_fields_frame
-            enable_var = self.avatar_enable_var
-            config_key = "avatar_enabled"
-        else:
+        elif config_type == "invite":
             frame = self.invite_config_fields_frame
             enable_var = self.invite_enable_var
             config_key = "invite_enabled"
+        elif config_type == "languages":
+            frame = self.languages_config_fields_frame
+            enable_var = self.languages_enable_var
+            config_key = "languages_enabled"
+        else:
+            frame = self.controller_fields_frame
+            enable_var = self.controller_enable_var
+            config_key = "controller_enabled"
 
         state = "normal" if enable_var.get() else "disabled"
         self.user_config.set(config_key, enable_var.get())
@@ -5548,6 +5654,54 @@ class WatcherUI(tk.Tk):
             self._update_user_config_ini_files(config_type)
         else:
             self._update_user_config_ini_files(config_type)
+
+        if config_type == "controller":
+            controller_dir = EXTRA_FOLDER / "controller"
+            if enable_var.get():
+                user_glyphs_dir = APP_FOLDER / "icons" / "user_images" / "glyphs"
+                default_glyphs_dir = APP_FOLDER / "icons" / "glyphs"
+                target_glyphs_dir = controller_dir / "glyphs"
+
+                target_glyphs_dir.mkdir(parents=True, exist_ok=True)
+
+                if user_glyphs_dir.exists():
+                    for src_file in user_glyphs_dir.iterdir():
+                        if src_file.is_file():
+                            shutil.copy2(src_file, target_glyphs_dir / src_file.name)
+
+                if default_glyphs_dir.exists():
+                    for src_file in default_glyphs_dir.iterdir():
+                        if src_file.is_file():
+                            dest_path = target_glyphs_dir / src_file.name
+                            if not dest_path.exists():
+                                shutil.copy2(src_file, dest_path)
+
+                if user_glyphs_dir.exists():
+                    shutil.rmtree(user_glyphs_dir)
+
+                self._create_default_controller_files()
+            else:
+                source_glyphs_dir = controller_dir / "glyphs"
+                backup_glyphs_dir = APP_FOLDER / "icons" / "user_images" / "glyphs"
+
+                backup_glyphs_dir.mkdir(parents=True, exist_ok=True)
+
+                if source_glyphs_dir.exists():
+                    for src_file in source_glyphs_dir.iterdir():
+                        if src_file.is_file():
+                            dest_path = backup_glyphs_dir / src_file.name
+                            if src_file.exists():
+                                shutil.move(str(src_file), str(dest_path))
+
+                controller_dir = EXTRA_FOLDER / "controller"
+                if controller_dir.exists():
+                    shutil.rmtree(controller_dir)
+                    if config_type == "controller" and enable_var.get():
+                        if not hasattr(self, 'controller_config_forms_created'):
+                            self._create_controller_config_forms()
+                            self.controller_config_forms_created = True
+
+        self._update_user_config_ini_files(config_type)
 
         def enable_disable_widgets(f):
             for child in f.winfo_children():
@@ -5691,6 +5845,168 @@ class WatcherUI(tk.Tk):
         except Exception as e:
             log_manager.log_error(f"Failed to {action} avatar file: {e}")
 
+    def _create_default_controller_files(self):
+        controller_dir = EXTRA_FOLDER / "controller"
+        controller_dir.mkdir(parents=True, exist_ok=True)
+
+        # Default InGameControls.txt
+        ingame_path = controller_dir / "InGameControls.txt"
+        if not ingame_path.exists():
+            ingame_content = """Move=LJOY=joystick_move
+Camera=RJOY=joystick_move
+Dash=RTRIGGER=trigger
+LockOn=LTRIGGER=trigger
+pause_menu=START
+LightAttack=X
+HeavyAttack=Y
+Jump=A
+check=B
+ActivateSkillAndMagic=RBUMPER
+IdeaRelease=LBUMPER
+AllMap=BACK
+ResetCamera=RSTICK
+ChangeCharacterUp=DUP
+ChangeCharacterDown=DDOWN
+ChangeCharacterRight=DRIGHT
+ChangeCharacterLeft=DLEFT"""
+            ingame_path.write_text(ingame_content, encoding="utf-8")
+
+        # Default MenuControls.txt
+        menu_path = controller_dir / "MenuControls.txt"
+        if not menu_path.exists():
+            menu_content = """MenuDash=RTRIGGER=trigger
+MenuLockOn=LTRIGGER=trigger
+MenuUp=DUP,DLJOYUP
+MenuDown=DDOWN,DLJOYDOWN
+MenuRight=DRIGHT,DLJOYRIGHT
+MenuLeft=DLEFT,DLJOYLEFT
+SELECT=A
+Cancel=B
+MenuX=X
+MenuY=Y
+MenuRTrigger=RBUMPER
+MenuLTrigger=LBUMPER
+Sort=BACK
+PauseMenu=START
+ScrollUp=DRJOYUP
+ScrollDown=DRJOYDOWN"""
+            menu_path.write_text(menu_content, encoding="utf-8")
+
+    def _browse_glyph(self, filename, img_label, img_frame=None, entry_var=None):
+        file_types = [
+            ("Image Files", "*.png *.jpg *.jpeg *.bmp"),
+            ("All Files", "*.*")
+        ]
+        file_path = filedialog.askopenfilename(
+            title=f"Select Image for {filename}",
+            filetypes=file_types
+        )
+
+        if not file_path:
+            return
+
+        try:
+            glyphs_dir = EXTRA_FOLDER / "controller" / "glyphs"
+            glyphs_dir.mkdir(parents=True, exist_ok=True)
+            dest_path = glyphs_dir / filename
+
+            shutil.copy2(file_path, dest_path)
+
+            if entry_var:
+                entry_var.set(filename)
+
+            self._load_glyph_image(filename, img_label, img_frame)
+
+            log_manager.log_message(f"✅ Button glyph updated: {filename}")
+
+        except Exception as e:
+            log_manager.log_error(f"Failed to update glyph {filename}: {e}")
+            show_custom_dialog(self, "error", "Error", f"Failed to update glyph: {e}")
+
+    def _remove_glyph(self, filename, img_label, img_frame=None, entry_var=None):
+        try:
+            controller_glyphs_dir = EXTRA_FOLDER / "controller" / "glyphs"
+            default_glyphs_dir = APP_FOLDER / "icons" / "glyphs"
+
+            custom_path = controller_glyphs_dir / filename
+            if custom_path.exists():
+                custom_path.unlink()
+                log_manager.log_message(f"🗑️  Removed custom glyph: {filename}")
+
+            default_path = default_glyphs_dir / filename
+            if default_path.exists():
+                dest_path = controller_glyphs_dir / filename
+                shutil.copy2(default_path, dest_path)
+                log_manager.log_message(f"✅ Restored default glyph: {filename}")
+
+                if entry_var:
+                    entry_var.set(filename)
+
+                self._load_glyph_image(filename, img_label, img_frame)
+            else:
+                self._load_glyph_image(filename, img_label, img_frame)
+
+        except Exception as e:
+            log_manager.log_error(f"Failed to remove glyph {filename}: {e}")
+            show_custom_dialog(self, "error", "Error", f"Failed to remove glyph: {e}")
+
+    def _is_custom_glyph(self, filename: str) -> bool:
+        default_glyphs_dir = APP_FOLDER / "icons" / "glyphs"
+        user_glyphs_dir = APP_FOLDER / "icons" / "user_images" / "glyphs"
+        current_glyphs_dir = EXTRA_FOLDER / "controller" / "glyphs"
+
+        current_path = current_glyphs_dir / filename
+        if not current_path.exists():
+            return False
+
+        user_path = user_glyphs_dir / filename
+        if user_path.exists():
+            return True
+
+        default_path = default_glyphs_dir / filename
+        if not default_path.exists():
+            return False
+
+        try:
+            with open(current_path, "rb") as f1, open(default_path, "rb") as f2:
+                return f1.read() != f2.read()
+        except Exception:
+            return False
+
+    def _update_glyph_filename(self, old_filename):
+        entry_var = getattr(self, f"glyph_entry_{old_filename}", None)
+        if not entry_var:
+            return
+
+        new_filename = entry_var.get().strip()
+        if not new_filename:
+            new_filename = old_filename
+
+        if new_filename != old_filename:
+            glyphs_dir = EXTRA_FOLDER / "controller" / "glyphs"
+            old_path = glyphs_dir / old_filename
+            new_path = glyphs_dir / new_filename
+
+            if old_path.exists():
+                try:
+                    shutil.move(str(old_path), str(new_path))
+                    # Update the button_glyphs mapping
+                    for key, val in self.button_glyphs.items():
+                        if val == old_filename:
+                            self.button_glyphs[key] = new_filename
+                            break
+
+                    setattr(self, f"glyph_entry_{old_filename}", None)
+                    setattr(self, f"glyph_entry_{new_filename}", entry_var)
+                    setattr(self, f"glyph_img_{old_filename}", None)
+                    setattr(self, f"glyph_img_{new_filename}", getattr(self, f"glyph_img_{old_filename}"))
+                    setattr(self, f"glyph_frame_{old_filename}", None)
+                    setattr(self, f"glyph_frame_{new_filename}", getattr(self, f"glyph_frame_{old_filename}"))
+
+                except Exception as e:
+                    log_manager.log_error(f"Failed to rename glyph: {e}")
+                    entry_var.set(old_filename)
+
     def _save_user_config(self, key, value):
         self.user_config.set(key, value)
 
@@ -5719,6 +6035,9 @@ class WatcherUI(tk.Tk):
         
         if key.startswith("invite_") and self.invite_enable_var.get():
             self._update_user_config_ini_files("invite")
+
+        if key.startswith("languages_") and self.languages_enable_var.get():
+            self._update_user_config_ini_files("languages")
 
     def _create_overlay_config_forms(self):
         theme = self.DARK_THEME if self.dark_mode and not self.custom_theme else (self.custom_theme if self.custom_theme else self.LIGHT_THEME)
@@ -6208,6 +6527,14 @@ class WatcherUI(tk.Tk):
             instruction_text="Enter SteamIDs (one per line):"
         )
 
+    def _create_languages_config_forms(self):
+        self._create_draggable_config_forms(
+            config_type="languages",
+            file_name="supported_languages.txt",
+            frame_attr="languages_config_fields_frame",
+            instruction_text="Enter a language (one per line):"
+        )
+
     def _create_draggable_config_forms(self, config_type, file_name, frame_attr, instruction_text):
         theme = self.DARK_THEME if self.dark_mode and not self.custom_theme else (self.custom_theme if self.custom_theme else self.LIGHT_THEME)
         
@@ -6238,12 +6565,468 @@ class WatcherUI(tk.Tk):
             fg=theme['fg']
         )
         instruction.pack(anchor="w", pady=(0, 5))
-    
+
     def _refresh_draggable_list(self, config_type):
         list_instance = getattr(self, f'{config_type}_list', None)
         if list_instance:
             list_instance._load_items()
             list_instance._refresh_list()
+
+    def _create_controller_config_forms(self):
+        theme = self.DARK_THEME if self.dark_mode and not self.custom_theme else (self.custom_theme if self.custom_theme else self.LIGHT_THEME)
+
+        for widget in self.controller_fields_frame.winfo_children():
+            widget.destroy()
+
+        controller_dir = EXTRA_FOLDER / "controller"
+        controller_dir.mkdir(parents=True, exist_ok=True)
+        glyphs_dir = controller_dir / "glyphs"
+        glyphs_dir.mkdir(parents=True, exist_ok=True)
+
+        # ===== IN GAME CONTROLS SECTION =====
+        ingame_label = Label(
+            self.controller_fields_frame,
+            text="In Game Controls",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 14, "bold")
+        )
+        ingame_label.pack(pady=(0, 5))
+
+        ingame_separator = Frame(self.controller_fields_frame, height=2, bg=theme['border'])
+        ingame_separator.pack(fill="x", pady=(0, 10))
+
+        ingame_container = Frame(self.controller_fields_frame, bg=theme['bg'])
+        ingame_container.pack(fill="x", pady=5)
+
+        ingame_left_frame = Frame(ingame_container, bg=theme['bg'])
+        ingame_left_frame.pack(side="left", fill="both", expand=True, padx=(0, 1))
+
+        ingame_right_frame = Frame(ingame_container, bg=theme['bg'])
+        ingame_right_frame.pack(side="right", fill="both", expand=True, padx=(5, 1))
+
+        ingame_path = controller_dir / "InGameControls.txt"
+        self._create_control_entries(
+            ingame_path,
+            ingame_left_frame,
+            ingame_right_frame,
+            theme,
+            "ingame"
+        )
+
+        # ===== MENU CONTROLS SECTION =====
+        menu_label = Label(
+            self.controller_fields_frame,
+            text="Menu Controls",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 14, "bold")
+        )
+        menu_label.pack(pady=(15, 5))
+
+        menu_separator = Frame(self.controller_fields_frame, height=2, bg=theme['border'])
+        menu_separator.pack(fill="x", pady=(0, 10))
+
+        menu_container = Frame(self.controller_fields_frame, bg=theme['bg'])
+        menu_container.pack(fill="x", pady=5)
+
+        menu_left_frame = Frame(menu_container, bg=theme['bg'])
+        menu_left_frame.pack(side="left", fill="both", expand=True, padx=(0, 1))
+
+        menu_right_frame = Frame(menu_container, bg=theme['bg'])
+        menu_right_frame.pack(side="right", fill="both", expand=True, padx=(2, 1))
+
+        menu_path = controller_dir / "MenuControls.txt"
+        self._create_control_entries(
+            menu_path,
+            menu_left_frame,
+            menu_right_frame,
+            theme,
+            "menu"
+        )
+
+        # ===== BUTTON GLYPHS SECTION =====
+        glyphs_label = Label(
+            self.controller_fields_frame,
+            text="Button Glyphs",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            font=("Helvetica", 14, "bold")
+        )
+        glyphs_label.pack(pady=(15, 5))
+
+        glyphs_separator = Frame(self.controller_fields_frame, height=2, bg=theme['border'])
+        glyphs_separator.pack(fill="x", pady=(0, 10))
+
+        glyphs_container = Frame(self.controller_fields_frame, bg=theme['bg'])
+        glyphs_container.pack(fill="x", pady=5)
+
+        glyphs_left_frame = Frame(glyphs_container, bg=theme['bg'])
+        glyphs_left_frame.pack(side="left", fill="both", expand=True, padx=(0, 1))
+
+        glyphs_right_frame = Frame(glyphs_container, bg=theme['bg'])
+        glyphs_right_frame.pack(side="right", fill="both", expand=True, padx=(2, 1))
+
+        self._create_glyph_entries(
+            glyphs_left_frame,
+            glyphs_right_frame,
+            theme
+        )
+
+        self._create_default_controller_files()
+
+    def _create_control_entries(self, file_path, left_frame, right_frame, theme, config_type):
+        entries = {}
+        if file_path.exists():
+            try:
+                content = file_path.read_text(encoding="utf-8")
+                for line in content.splitlines():
+                    if "=" in line:
+                        key, value = line.split("=", 1)
+                        entries[key.strip()] = value.strip()
+            except Exception as e:
+                log_manager.log_error(f"Failed to load {file_path.name}: {e}")
+
+        if config_type == "ingame" and not entries:
+            entries = {
+                "Move": "LJOY=joystick_move",
+                "Camera": "RJOY=joystick_move",
+                "Dash": "RTRIGGER=trigger",
+                "LockOn": "LTRIGGER=trigger",
+                "pause_menu": "START",
+                "LightAttack": "X",
+                "HeavyAttack": "Y",
+                "Jump": "A",
+                "check": "B",
+                "ActivateSkillAndMagic": "RBUMPER",
+                "IdeaRelease": "LBUMPER",
+                "AllMap": "BACK",
+                "ResetCamera": "RSTICK",
+                "ChangeCharacterUp": "DUP",
+                "ChangeCharacterDown": "DDOWN",
+                "ChangeCharacterRight": "DRIGHT",
+                "ChangeCharacterLeft": "DLEFT"
+            }
+        elif config_type == "menu" and not entries:
+            entries = {
+                "MenuDash": "RTRIGGER=trigger",
+                "MenuLockOn": "LTRIGGER=trigger",
+                "MenuUp": "DUP,DLJOYUP",
+                "MenuDown": "DDOWN,DLJOYDOWN",
+                "MenuRight": "DRIGHT,DLJOYRIGHT",
+                "MenuLeft": "DLEFT,DLJOYLEFT",
+                "SELECT": "A",
+                "Cancel": "B",
+                "MenuX": "X",
+                "MenuY": "Y",
+                "MenuRTrigger": "RBUMPER",
+                "MenuLTrigger": "LBUMPER",
+                "Sort": "BACK",
+                "PauseMenu": "START",
+                "ScrollUp": "DRJOYUP",
+                "ScrollDown": "DRJOYDOWN"
+            }
+
+        entry_list = list(entries.items())
+        mid_point = len(entry_list) // 2
+
+        for key, value in entry_list[:mid_point]:
+            self._create_control_row(left_frame, key, value, file_path, theme, config_type)
+
+        for key, value in entry_list[mid_point:]:
+            self._create_control_row(right_frame, key, value, file_path, theme, config_type)
+
+    def _create_glyph_entries(self, left_frame, right_frame, theme):
+        button_glyphs = OrderedDict([
+            ("A", "button_a.png"),
+            ("B", "button_b.png"),
+            ("X", "button_x.png"),
+            ("Y", "button_y.png"),
+            ("Left Shoulder", "shoulder_l.png"),
+            ("Right Shoulder", "shoulder_r.png"),
+            ("Stick Up", "stick_dpad_n.png"),
+            ("Stick Right", "stick_dpad_e.png"),
+            ("Stick Down", "stick_dpad_s.png"),
+            ("Stick Left", "stick_dpad_w.png"),
+            ("Left Stick Click", "stick_l_click.png"),
+            ("Right Stick Click", "stick_r_click.png"),
+            ("Left Stick Move", "stick_l_move.png"),
+            ("Right Stick Move", "stick_r_move.png"),
+            ("Left Trigger Click", "trigger_l_click.png"),
+            ("Right Trigger Click", "trigger_r_click.png"),
+            ("Left Trigger Pull", "trigger_l_pull.png"),
+            ("Right Trigger Pull", "trigger_r_pull.png"),
+            ("DPad Up", "xbox_button_dpad_n.png"),
+            ("DPad Right", "xbox_button_dpad_e.png"),
+            ("DPad Down", "xbox_button_dpad_s.png"),
+            ("DPad Left", "xbox_button_dpad_w.png"),
+            ("DPad Move", "xbox_button_dpad_move.png"),
+            ("Select Button", "xbox_button_select.png"),
+            ("Pause/Start Button", "xbox_button_start.png")
+        ])
+
+        glyph_list = list(button_glyphs.items())
+        mid_point = len(glyph_list) // 2
+
+        for label_text, filename in glyph_list[:mid_point]:
+            self._create_glyph_row(left_frame, label_text, filename, theme)
+
+        for label_text, filename in glyph_list[mid_point:]:
+            self._create_glyph_row(right_frame, label_text, filename, theme)
+
+    def _create_glyph_row(self, parent_frame, label_text, filename, theme):
+        row_frame = Frame(parent_frame, bg=theme['bg'])
+        row_frame.pack(fill="x", pady=0)
+
+        label = Label(
+            row_frame,
+            text=label_text + ":",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            width=16,
+            anchor="e"
+        )
+        label.pack(side="left", padx=(0, 1))
+
+        img_frame = Frame(row_frame, bg=theme['widget_bg'], width=BUTTON_SIZE, height=BUTTON_SIZE)
+        img_frame.pack(side="left", padx=(0, 5))
+        img_frame.pack_propagate(False)
+
+        img_label = Label(img_frame, bg=theme['widget_bg'])
+        img_label.pack(fill="both", expand=True)
+
+        entry_var = tk.StringVar(value=filename)
+        entry = Entry(
+            row_frame,
+            textvariable=entry_var,
+            width=12,
+            bg=theme['widget_bg'],
+            fg=theme['fg']
+        )
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+        browse_btn = Button(
+            row_frame,
+            text="Browse",
+            command=lambda f=filename, il=img_label, ifr=img_frame, ev=entry_var: self._browse_glyph(f, il, ifr, ev),
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            width=5
+        )
+        browse_btn.pack(side="left")
+
+        remove_btn = Button(
+            row_frame,
+            text="X",
+            command=lambda f=filename, il=img_label, ifr=img_frame, ev=entry_var: self._remove_glyph(f, il, ifr, ev),
+            bg=theme['button_bg'],
+            fg=theme['fg'],
+            width=1
+        )
+        remove_btn.pack(side="left")
+
+        if not hasattr(self, 'glyph_entries'):
+            self.glyph_entries = {}
+        self.glyph_entries[filename] = entry_var
+        setattr(self, f"glyph_img_{filename}", img_label)
+
+        entry_var.trace_add("write", lambda *_: self._update_user_config_ini_files("controller"))
+
+        self._load_glyph_image(filename, img_label)
+
+    def _create_control_entries(self, file_path, left_frame, right_frame, theme, config_type):
+        label_mappings = {
+            "ingame": {
+                "Move": "Left Stick",
+                "Camera": "Right Stick",
+                "Dash": "Right Trigger",
+                "LockOn": "Left Trigger",
+                "pause_menu": "Pause",
+                "LightAttack": "X Button",
+                "HeavyAttack": "Y Button",
+                "Jump": "A Button",
+                "check": "B Button",
+                "ActivateSkillAndMagic": "Right Bumper",
+                "IdeaRelease": "Left Bumper",
+                "AllMap": "Back",
+                "ResetCamera": "Right Stick Click",
+                "ChangeCharacterUp": "DPad Up",
+                "ChangeCharacterDown": "DPad Down",
+                "ChangeCharacterRight": "DPad Right",
+                "ChangeCharacterLeft": "DPad Left"
+            },
+            # Menu Controls
+            "menu": {
+                "MenuDash": "Right Trigger",
+                "MenuLockOn": "Left Trigger",
+                "MenuUp": "Up",
+                "MenuDown": "Down",
+                "MenuRight": "Right",
+                "MenuLeft": "Left",
+                "SELECT": "Select",
+                "Cancel": "Cancel",
+                "MenuX": "X Button",
+                "MenuY": "Y Button",
+                "MenuRTrigger": "Right Trigger",
+                "MenuLTrigger": "Left Trigger",
+                "Sort": "Back",
+                "PauseMenu": "Start",
+                "ScrollUp": "Right Stick Up",
+                "ScrollDown": "Right Stick Down"
+            }
+        }
+
+        entries = {}
+        if file_path.exists():
+            try:
+                content = file_path.read_text(encoding="utf-8")
+                for line in content.splitlines():
+                    if "=" in line:
+                        key, value = line.split("=", 1)
+                        entries[key.strip()] = value.strip()
+            except Exception as e:
+                log_manager.log_error(f"Failed to load {file_path.name}: {e}")
+
+        if config_type == "ingame" and not entries:
+            entries = {
+                "Move": "LJOY=joystick_move",
+                "Camera": "RJOY=joystick_move",
+                "Dash": "RTRIGGER=trigger",
+                "LockOn": "LTRIGGER=trigger",
+                "pause_menu": "START",
+                "LightAttack": "X",
+                "HeavyAttack": "Y",
+                "Jump": "A",
+                "check": "B",
+                "ActivateSkillAndMagic": "RBUMPER",
+                "IdeaRelease": "LBUMPER",
+                "AllMap": "BACK",
+                "ResetCamera": "RSTICK",
+                "ChangeCharacterUp": "DUP",
+                "ChangeCharacterDown": "DDOWN",
+                "ChangeCharacterRight": "DRIGHT",
+                "ChangeCharacterLeft": "DLEFT"
+            }
+        elif config_type == "menu" and not entries:
+            entries = {
+                "MenuDash": "RTRIGGER=trigger",
+                "MenuLockOn": "LTRIGGER=trigger",
+                "MenuUp": "DUP,DLJOYUP",
+                "MenuDown": "DDOWN,DLJOYDOWN",
+                "MenuRight": "DRIGHT,DLJOYRIGHT",
+                "MenuLeft": "DLEFT,DLJOYLEFT",
+                "SELECT": "A",
+                "Cancel": "B",
+                "MenuX": "X",
+                "MenuY": "Y",
+                "MenuRTrigger": "RBUMPER",
+                "MenuLTrigger": "LBUMPER",
+                "Sort": "BACK",
+                "PauseMenu": "START",
+                "ScrollUp": "DRJOYUP",
+                "ScrollDown": "DRJOYDOWN"
+            }
+
+        entry_list = list(entries.items())
+        mid_point = len(entry_list) // 2
+
+        for key, value in entry_list[:mid_point]:
+            display_name = label_mappings.get(config_type, {}).get(key, key)
+            self._create_control_row(left_frame, display_name, key, value, file_path, theme, config_type)
+
+        for key, value in entry_list[mid_point:]:
+            display_name = label_mappings.get(config_type, {}).get(key, key)
+            self._create_control_row(right_frame, display_name, key, value, file_path, theme, config_type)
+
+    def _create_control_row(self, parent_frame, display_name, key, value, file_path, theme, config_type):
+        row_frame = Frame(parent_frame, bg=theme['bg'])
+        row_frame.pack(fill="x", pady=2)
+
+        label = Label(
+            row_frame,
+            text=display_name + ":",
+            bg=theme['bg'],
+            fg=theme['fg'],
+            width=18,
+            anchor="e"
+        )
+        label.pack(side="left", padx=(0, 5))
+
+        # Entry field
+        entry_var = tk.StringVar(value=value)
+        entry = Entry(
+            row_frame,
+            textvariable=entry_var,
+            width=30,
+            bg=theme['widget_bg'],
+            fg=theme['fg']
+        )
+        entry.pack(side="left", fill="x", expand=True)
+
+        if not hasattr(self, 'controller_entries'):
+            self.controller_entries = {"ingame": {}, "menu": {}}
+        self.controller_entries[config_type][key] = entry_var
+
+        entry_var.trace_add("write", lambda *_: self._update_user_config_ini_files("controller"))
+
+    def _load_glyph_image(self, filename, img_label, img_frame=None):
+        theme = self.custom_theme if hasattr(self, 'custom_theme') and self.custom_theme else (self.DARK_THEME if self.dark_mode else self.LIGHT_THEME)
+        user_glyph_path = APP_FOLDER / "icons" / "user_images" / "glyphs" / filename
+        default_glyph_path = EXTRA_FOLDER / "controller" / "glyphs" / filename
+        fallback_glyph_path = APP_FOLDER / "icons" / "glyphs" / filename
+
+        glyph_path = None
+        if user_glyph_path.exists():
+            glyph_path = user_glyph_path
+        elif default_glyph_path.exists():
+            glyph_path = default_glyph_path
+        elif fallback_glyph_path.exists():
+            glyph_path = fallback_glyph_path
+
+        try:
+            if glyph_path.exists():
+                pil_img = Image.open(glyph_path)
+                pil_img = pil_img.resize((BUTTON_SIZE, BUTTON_SIZE))
+                glyph_img = ImageTk.PhotoImage(pil_img)
+                img_label.config(image=glyph_img, bg=theme['widget_bg'])
+                img_label.image = glyph_img
+            else:
+                img_label.config(image='', bg=theme['widget_bg'], text="?", compound="center")
+        except Exception as e:
+            log_manager.log_error(f"Failed to load glyph {filename}: {e}")
+            img_label.config(image='', bg=theme['widget_bg'], text="X", compound="center")
+
+    def _save_controller_files(self):
+        controller_dir = EXTRA_FOLDER / "controller"
+        controller_dir.mkdir(parents=True, exist_ok=True)
+
+        if hasattr(self, 'controller_entries') and 'ingame' in self.controller_entries:
+            ingame_path = controller_dir / "InGameControls.txt"
+            lines = []
+            for key in sorted(self.controller_entries['ingame'].keys()):
+                value = self.controller_entries['ingame'][key].get()
+                lines.append(f"{key}={value}")
+            ingame_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        if hasattr(self, 'controller_entries') and 'menu' in self.controller_entries:
+            menu_path = controller_dir / "MenuControls.txt"
+            lines = []
+            for key in sorted(self.controller_entries['menu'].keys()):
+                value = self.controller_entries['menu'][key].get()
+                lines.append(f"{key}={value}")
+            menu_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        if hasattr(self, 'glyph_entries'):
+            glyphs_dir = controller_dir / "glyphs"
+            glyphs_dir.mkdir(parents=True, exist_ok=True)
+
+            for filename, entry_var in self.glyph_entries.items():
+                new_filename = entry_var.get().strip()
+                if new_filename and new_filename != filename:
+                    old_path = glyphs_dir / filename
+                    new_path = glyphs_dir / new_filename
+                    if old_path.exists():
+                        shutil.move(str(old_path), str(new_path))
 
     def _update_user_config_ini_files(self, config_type=None):
         # Handle avatar config
@@ -6252,6 +7035,9 @@ class WatcherUI(tk.Tk):
                 self._manage_avatar_file("copy")
             else:
                 self._manage_avatar_file("remove")
+
+        if config_type == "controller" and self.controller_enable_var.get():
+            self._save_controller_files()
 
         # ===== USER CONFIG =====
         user_ini_path = EXTRA_FOLDER / "configs.user.ini"
@@ -6433,6 +7219,18 @@ class WatcherUI(tk.Tk):
                     except Exception as e:
                         log_manager.log_error(e, "_update_user_config_ini_files (removing invite)")
 
+        # ===== LANGUAGES CONFIG =====
+        if config_type in ("languages", "all") and hasattr(self, 'languages_enable_var'):
+            languages_file = EXTRA_FOLDER / "supported_languages.txt"
+            if self.languages_enable_var.get():
+                if not languages_file.exists() and hasattr(self, 'languages_list'):
+                    self.languages_list._save_items()
+            else:
+                if languages_file.exists():
+                    try:
+                        languages_file.unlink()
+                    except Exception as e:
+                        log_manager.log_error(e, "_update_user_config_ini_files (removing languages)")
 
     def __init__(self, file_queue: queue.Queue):
         super().__init__()
@@ -6679,6 +7477,13 @@ class WatcherUI(tk.Tk):
 
         self.invite_config_forms_created = False
         self.invite_config_vars = {}
+
+        self.languages_config_forms_created = False
+        self.languages_config_vars = {}
+
+        self.controller_config_forms_created = False
+        self.controller_config_vars = {}
+
 
         self._init_game_config()
 
